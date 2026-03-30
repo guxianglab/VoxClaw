@@ -1,14 +1,10 @@
 {
   "name": "voxclaw",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "packageManager": "pnpm@9.15.0",
   "type": "module",
   "scripts": {
-    "sync:version": "node scripts/sync-tauri-version.mjs",
-    "predev": "npm run sync:version",
-    "prebuild": "npm run sync:version",
-    "pretauri": "npm run sync:version",
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
