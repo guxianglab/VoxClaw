@@ -760,10 +760,10 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
                             setConfig(next);
                             saveLater(next);
                           }}
-                          className={`rounded-lg border px-4 py-2 text-sm transition ${
+                          className={`px-3 py-1.5 text-sm font-medium transition-opacity ${
                             config.agent_config.mode === mode
-                              ? "border-neutral-900 bg-neutral-900 text-white"
-                              : "border-neutral-200 bg-white text-neutral-600 hover:border-neutral-300"
+                              ? "bg-neutral-900 text-neutral-50"
+                              : "text-neutral-500 hover:bg-neutral-200 hover:text-neutral-900"
                           }`}
                         >
                           {mode === "skill" ? "技能模式" : "AI Agent"}
@@ -779,119 +779,88 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
                 <>
                 <Section title="Agent 配置">
                   <div className="space-y-4">
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium text-neutral-700">LLM Provider</label>
-                      <select
-                        value={config.agent_config.provider_type || "openai_compatible"}
-                        onChange={(e) => updateAgentConfig("provider_type", e.target.value)}
-                        className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm"
-                      >
-                        <option value="openai_compatible">OpenAI Compatible</option>
-                        <option value="anthropic">Anthropic Claude</option>
-                      </select>
+                    <div className="mb-4 bg-neutral-100 px-4 py-3">
+                      <div className="flex items-center gap-2 text-sm">
+                        <span className="font-medium text-neutral-700">LLM Provider</span>
+                        <span className="text-neutral-400">·</span>
+                        <span className="text-neutral-500">支持 OpenAI / Anthropic 格式的模型服务</span>
+                      </div>
                     </div>
-
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium text-neutral-700">Base URL</label>
-                      <input
-                        type="text"
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <Field
+                        label="Base URL"
                         value={config.agent_config.provider_base_url || ""}
-                        onChange={(e) => updateAgentConfig("provider_base_url", e.target.value)}
+                        onChange={(value) => updateAgentConfig("provider_base_url", value)}
                         placeholder="留空则使用 LLM 设置中的 URL"
-                        className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm"
                       />
-                    </div>
-
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium text-neutral-700">API Key</label>
-                      <input
-                        type="password"
+                      <Field
+                        label="API Key"
                         value={config.agent_config.provider_api_key || ""}
-                        onChange={(e) => updateAgentConfig("provider_api_key", e.target.value)}
-                        placeholder="留空则使用 LLM 设置中的 Key"
-                        className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm"
+                        onChange={(value) => updateAgentConfig("provider_api_key", value)}
+                        type="password"
                       />
-                    </div>
-
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium text-neutral-700">Model</label>
-                      <input
-                        type="text"
+                      <Field
+                        label="Model"
                         value={config.agent_config.provider_model || ""}
-                        onChange={(e) => updateAgentConfig("provider_model", e.target.value)}
+                        onChange={(value) => updateAgentConfig("provider_model", value)}
                         placeholder="留空则使用 LLM 设置中的模型"
-                        className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm"
+                      />
+                      <Field
+                        label="Thinking Level"
+                        value={config.agent_config.thinking_level || "none"}
+                        onChange={(value) => updateAgentConfig("thinking_level", value)}
                       />
                     </div>
 
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium text-neutral-700">Thinking Level</label>
-                      <select
-                        value={config.agent_config.thinking_level || "none"}
-                        onChange={(e) => updateAgentConfig("thinking_level", e.target.value)}
-                        className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm"
-                      >
-                        <option value="none">None</option>
-                        <option value="low">Low</option>
-                        <option value="medium">Medium</option>
-                        <option value="high">High</option>
-                      </select>
-                    </div>
+                    <ToggleRow
+                      title="Confirm dangerous operations"
+                      desc="执行危险操作前弹窗确认"
+                      active={config.agent_config.confirm_dangerous}
+                      onToggle={() => updateAgentConfig("confirm_dangerous", !config.agent_config.confirm_dangerous)}
+                    />
 
-                    <div className="flex items-center justify-between">
-                      <label className="text-sm font-medium text-neutral-700">Max Iterations</label>
+                    <Area
+                      label="系统提示词"
+                      value={config.agent_config.system_prompt || ""}
+                      onChange={(value) => updateAgentConfig("system_prompt", value)}
+                      rows={4}
+                      placeholder="留空使用内置默认提示词。可自定义 Agent 的人格、行为规则和输出格式。"
+                    />
+
+                    <Area
+                      label="常驻上下文"
+                      value={config.agent_config.persistent_context || ""}
+                      onChange={(value) => updateAgentConfig("persistent_context", value)}
+                      rows={3}
+                      placeholder="每次 Agent 执行时都会注入的上下文信息，如当前项目路径、常用缩写等。"
+                    />
+
+                    <ToggleRow
+                      title="自动注入环境信息"
+                      desc="自动追加操作系统、用户名等信息到系统提示词"
+                      active={config.agent_config.auto_inject_env}
+                      onToggle={() => updateAgentConfig("auto_inject_env", !config.agent_config.auto_inject_env)}
+                    />
+
+                    <div className="flex items-center justify-between py-2">
+                      <div>
+                        <div className="text-sm text-neutral-900">Max Iterations</div>
+                        <div className="mt-0.5 text-xs text-neutral-400">最大迭代次数</div>
+                      </div>
                       <input
                         type="number"
                         min="1"
                         max="50"
                         value={config.agent_config.max_iterations}
                         onChange={(e) => updateAgentConfig("max_iterations", parseInt(e.target.value) || 10)}
-                        className="w-20 rounded-lg border border-neutral-200 px-3 py-1.5 text-sm text-right"
+                        className="input-underline w-20 py-2 text-right text-sm text-neutral-900"
                       />
                     </div>
 
-                    <div className="flex items-center justify-between">
-                      <label className="text-sm font-medium text-neutral-700">Confirm dangerous operations</label>
-                      <button
-                        onClick={() => updateAgentConfig("confirm_dangerous", !config.agent_config.confirm_dangerous)}
-                        className={`relative w-10 h-5 rounded-full transition-colors ${
-                          config.agent_config.confirm_dangerous ? "bg-neutral-900" : "bg-neutral-200"
-                        }`}
-                      >
-                        <span
-                          className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
-                            config.agent_config.confirm_dangerous ? "translate-x-5" : "translate-x-0.5"
-                          }`}
-                        />
-                      </button>
-                    </div>
-
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium text-neutral-700">系统提示词</label>
-                      <textarea
-                        value={config.agent_config.system_prompt || ""}
-                        onChange={(e) => updateAgentConfig("system_prompt", e.target.value)}
-                        placeholder="留空使用内置默认提示词。可自定义 Agent 的人格、行为规则和输出格式。"
-                        rows={4}
-                        className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm resize-y"
-                      />
-                    </div>
-
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium text-neutral-700">常驻上下文</label>
-                      <textarea
-                        value={config.agent_config.persistent_context || ""}
-                        onChange={(e) => updateAgentConfig("persistent_context", e.target.value)}
-                        placeholder="每次 Agent 执行时都会注入的上下文信息，如当前项目路径、常用缩写等。"
-                        rows={3}
-                        className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm resize-y"
-                      />
-                    </div>
-
-                    <div className="flex items-center justify-between">
+                    <div className="flex items-center justify-between py-2">
                       <div>
-                        <label className="text-sm font-medium text-neutral-700">历史上下文条数</label>
-                        <p className="text-xs text-neutral-400">注入最近 N 次对话摘要，0 为关闭</p>
+                        <div className="text-sm text-neutral-900">历史上下文条数</div>
+                        <div className="mt-0.5 text-xs text-neutral-400">注入最近 N 次对话摘要，0 为关闭</div>
                       </div>
                       <input
                         type="number"
@@ -899,34 +868,15 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
                         max="20"
                         value={config.agent_config.context_history_count ?? 0}
                         onChange={(e) => updateAgentConfig("context_history_count", parseInt(e.target.value) || 0)}
-                        className="w-20 rounded-lg border border-neutral-200 px-3 py-1.5 text-sm text-right"
+                        className="input-underline w-20 py-2 text-right text-sm text-neutral-900"
                       />
-                    </div>
-
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <label className="text-sm font-medium text-neutral-700">自动注入环境信息</label>
-                        <p className="text-xs text-neutral-400">自动追加操作系统、用户名等信息到系统提示词</p>
-                      </div>
-                      <button
-                        onClick={() => updateAgentConfig("auto_inject_env", !config.agent_config.auto_inject_env)}
-                        className={`relative w-10 h-5 rounded-full transition-colors ${
-                          config.agent_config.auto_inject_env ? "bg-neutral-900" : "bg-neutral-200"
-                        }`}
-                      >
-                        <span
-                          className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
-                            config.agent_config.auto_inject_env ? "translate-x-5" : "translate-x-0.5"
-                          }`}
-                        />
-                      </button>
                     </div>
                   </div>
                 </Section>
                 <Section title="安全规则">
                   <div className="space-y-4">
                     <div className="space-y-2">
-                      <label className="text-sm font-medium text-neutral-700">默认策略</label>
+                      <label className="mb-1 block text-xs text-neutral-400">默认策略</label>
                       <div className="flex gap-4">
                         {(["confirm", "deny", "allow"] as const).map((policy) => (
                           <label key={policy} className="flex items-center gap-1.5 text-sm cursor-pointer">
@@ -947,8 +897,8 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
 
                     <div className="space-y-2">
                       <div className="flex items-center justify-between">
-                        <label className="text-sm font-medium text-neutral-700">规则列表</label>
-                        <button
+                        <label className="mb-1 block text-xs text-neutral-400">规则列表</label>
+                        <ActionButton
                           onClick={() => {
                             const newRule: SafetyRule = { tool: "*", action: "deny" };
                             const next = {
@@ -961,25 +911,24 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
                             setConfig(next);
                             saveLater(next);
                           }}
-                          className="text-xs px-2 py-1 rounded border border-neutral-200 hover:bg-neutral-50 transition-colors"
                         >
                           + 添加规则
-                        </button>
+                        </ActionButton>
                       </div>
                       {config.agent_config.safety_rules.length === 0 && (
                         <p className="text-xs text-neutral-400">暂无规则，所有操作将按默认策略处理</p>
                       )}
                       {config.agent_config.safety_rules.map((rule, idx) => (
-                        <div key={idx} className="flex items-center gap-2 text-sm bg-neutral-50 rounded-lg px-3 py-2">
-                          <span className="font-medium text-neutral-700">{rule.tool}</span>
+                        <div key={idx} className="flex items-center gap-2 text-sm py-2">
+                          <span className="text-neutral-900">{rule.tool}</span>
                           {rule.command_pattern && (
                             <span className="text-neutral-500">{rule.command_pattern}</span>
                           )}
                           {rule.path_scope && rule.path_scope.length > 0 && (
                             <span className="text-neutral-500">path: {rule.path_scope.join(", ")}</span>
                           )}
-                          <span className={`ml-auto px-1.5 py-0.5 rounded text-xs font-medium ${
-                            rule.action === "allow" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
+                          <span className={`ml-auto text-xs ${
+                            rule.action === "allow" ? "text-emerald-600" : "text-red-600"
                           }`}>
                             {rule.action === "allow" ? "允许" : "拒绝"}
                           </span>
@@ -1137,11 +1086,13 @@ function Field({
   value,
   onChange,
   type = "text",
+  placeholder,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   type?: string;
+  placeholder?: string;
 }) {
   return (
     <div>
@@ -1149,6 +1100,7 @@ function Field({
       <input
         type={type}
         value={value}
+        placeholder={placeholder}
         onChange={(event) => onChange(event.target.value)}
         className="input-underline w-full py-2 text-sm text-neutral-900"
       />
@@ -1284,25 +1236,21 @@ function SkillCard({
       {expanded && (
         <div className="pb-4 pl-6">
           <div className="mb-3 text-xs text-neutral-400">命中后执行，不粘贴文本</div>
-          <div>
-            <label className="mb-2 block text-sm font-medium text-neutral-600">关键词</label>
-            <input
-              value={skill.keywords}
-              onChange={(event) => onKeywordsChange(event.target.value)}
-              className="input-underline w-full py-2 text-neutral-900"
-            />
-          </div>
+          <Field
+            label="关键词"
+            value={skill.keywords}
+            onChange={onKeywordsChange}
+          />
 
           {hasSubCommands && (
             <div className="mt-6 space-y-5">
               <div className="space-y-3">
                 <button
                   onClick={() => setSubSkillsExpanded((value) => !value)}
-                  className="flex w-full items-center justify-between rounded-sm bg-neutral-100/70 px-3 py-2 text-left"
+                  className="flex w-full items-center justify-between py-2 text-left"
                 >
                   <div>
-                    <div className="text-sm font-medium text-neutral-700">子技能</div>
-                    <div className="mt-0.5 text-xs text-neutral-400">默认折叠显示，展开后每行两个</div>
+                    <div className="text-xs font-medium uppercase tracking-wider text-neutral-400">子技能</div>
                   </div>
                   {subSkillsExpanded ? (
                     <ChevronDown className="h-4 w-4 flex-shrink-0 text-neutral-400" />
@@ -1314,7 +1262,7 @@ function SkillCard({
                 {subSkillsExpanded && (
                   <div className="grid gap-3 md:grid-cols-2">
                     {skill.sub_commands.map((command) => (
-                      <div key={command.id} className="rounded-sm bg-neutral-100/70 p-3">
+                      <div key={command.id} className="py-2">
                         <div className="flex items-center justify-between gap-3">
                           <div>
                             <div className="text-sm text-neutral-900">{command.name}</div>
@@ -1355,7 +1303,7 @@ function SkillCard({
 
               {browserSkill && (
                 <div className="space-y-3">
-                <div className="text-sm font-medium text-neutral-700">网址解析</div>
+                <div className="border-b border-neutral-200 pb-2 text-xs font-medium uppercase tracking-wider text-neutral-400">网址解析</div>
                 <ToggleRow
                   title="未命中时使用 LLM 解析"
                   desc="借助已配置的大模型把站点名称转成公开网址"
@@ -1387,14 +1335,14 @@ function SkillCard({
               {browserSkill && (
                 <div className="space-y-3">
                 <div className="flex items-center justify-between gap-3">
-                  <div className="text-sm font-medium text-neutral-700">站点映射</div>
+                  <div className="border-b border-neutral-200 pb-2 text-xs font-medium uppercase tracking-wider text-neutral-400">站点映射</div>
                   <ActionButton onClick={onAddBrowserSite}>新增站点</ActionButton>
                 </div>
                 {browserOptions.sites.length === 0 ? (
                   <div className="text-xs text-neutral-400">还没有站点映射，未命中时会优先走 LLM 或搜索兜底。</div>
                 ) : (
                   browserOptions.sites.map((site) => (
-                    <div key={site.id} className="space-y-3 rounded-sm bg-neutral-100/70 p-3">
+                    <div key={site.id} className="space-y-3 py-2">
                       <div className="flex items-center justify-between gap-3">
                         <div className="text-xs text-neutral-400">{site.id}</div>
                         <div className="flex items-center gap-2">
