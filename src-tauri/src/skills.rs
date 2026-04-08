@@ -2,7 +2,6 @@ use std::collections::HashSet;
 use std::net::IpAddr;
 use std::process::Command;
 
-use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -1559,17 +1558,27 @@ pub fn open_windows_target(target: &WindowsTargetConfig) -> Result<(), String> {
 }
 
 pub fn execute_browser_shortcut_action(action: &BrowserAction) -> Result<(), String> {
-    let mut enigo = Enigo::new(&Settings::default())
-        .map_err(|e| format!("Failed to init keyboard: {:?}", e))?;
+    use crate::keyboard::{send_key_click, send_key_press, send_key_release, Key};
+
+    let send_chord = |modifiers: &[Key], key: Key| -> Result<(), String> {
+        for modifier in modifiers {
+            send_key_press(*modifier);
+        }
+        send_key_click(key);
+        for modifier in modifiers.iter().rev() {
+            send_key_release(*modifier);
+        }
+        Ok(())
+    };
 
     match action {
         BrowserAction::OpenTarget { .. } => {
             Err("OpenTarget must be executed via URL navigation".to_string())
         }
-        BrowserAction::NewTab => send_chord(&mut enigo, &[Key::Control], Key::Unicode('t')),
-        BrowserAction::CloseTab => send_chord(&mut enigo, &[Key::Control], Key::Unicode('w')),
-        BrowserAction::NextTab => send_chord(&mut enigo, &[Key::Control], Key::Tab),
-        BrowserAction::PreviousTab => send_chord(&mut enigo, &[Key::Control, Key::Shift], Key::Tab),
+        BrowserAction::NewTab => send_chord(&[Key::Control], Key::Unicode('t')),
+        BrowserAction::CloseTab => send_chord(&[Key::Control], Key::Unicode('w')),
+        BrowserAction::NextTab => send_chord(&[Key::Control], Key::Tab),
+        BrowserAction::PreviousTab => send_chord(&[Key::Control, Key::Shift], Key::Tab),
         BrowserAction::SwitchTabIndex { index } => {
             let normalized = (*index).clamp(1, 9);
             let key = if normalized >= 9 {
@@ -1577,50 +1586,65 @@ pub fn execute_browser_shortcut_action(action: &BrowserAction) -> Result<(), Str
             } else {
                 Key::Unicode(char::from_digit(normalized as u32, 10).unwrap_or('1'))
             };
-            send_chord(&mut enigo, &[Key::Control], key)
+            send_chord(&[Key::Control], key)
         }
         BrowserAction::ReopenTab => {
-            send_chord(&mut enigo, &[Key::Control, Key::Shift], Key::Unicode('t'))
+            send_chord(&[Key::Control, Key::Shift], Key::Unicode('t'))
         }
         BrowserAction::CloseOtherTabs | BrowserAction::CloseTabsToRight => {
             Err("当前快捷键模式暂不支持这个浏览器操作".to_string())
         }
-        BrowserAction::GoBack => send_chord(&mut enigo, &[Key::Alt], Key::LeftArrow),
-        BrowserAction::GoForward => send_chord(&mut enigo, &[Key::Alt], Key::RightArrow),
-        BrowserAction::Refresh => send_key_click(&mut enigo, Key::F5),
-        BrowserAction::HardRefresh => send_chord(&mut enigo, &[Key::Control], Key::F5),
-        BrowserAction::StopLoading => send_key_click(&mut enigo, Key::Escape),
-        BrowserAction::GoHome => send_chord(&mut enigo, &[Key::Alt], Key::Home),
-        BrowserAction::ScrollUp => send_key_click(&mut enigo, Key::UpArrow),
-        BrowserAction::ScrollDown => send_key_click(&mut enigo, Key::DownArrow),
-        BrowserAction::ScrollTop => send_chord(&mut enigo, &[Key::Control], Key::Home),
-        BrowserAction::ScrollBottom => send_chord(&mut enigo, &[Key::Control], Key::End),
-        BrowserAction::PageUp => send_key_click(&mut enigo, Key::PageUp),
-        BrowserAction::PageDown => send_key_click(&mut enigo, Key::PageDown),
+        BrowserAction::GoBack => send_chord(&[Key::Alt], Key::LeftArrow),
+        BrowserAction::GoForward => send_chord(&[Key::Alt], Key::RightArrow),
+        BrowserAction::Refresh => Ok(send_key_click(Key::F5)),
+        BrowserAction::HardRefresh => send_chord(&[Key::Control], Key::F5),
+        BrowserAction::StopLoading => Ok(send_key_click(Key::Escape)),
+        BrowserAction::GoHome => send_chord(&[Key::Alt], Key::Home),
+        BrowserAction::ScrollUp => Ok(send_key_click(Key::UpArrow)),
+        BrowserAction::ScrollDown => Ok(send_key_click(Key::DownArrow)),
+        BrowserAction::ScrollTop => send_chord(&[Key::Control], Key::Home),
+        BrowserAction::ScrollBottom => send_chord(&[Key::Control], Key::End),
+        BrowserAction::PageUp => Ok(send_key_click(Key::PageUp)),
+        BrowserAction::PageDown => Ok(send_key_click(Key::PageDown)),
         BrowserAction::Find { query } => {
-            send_chord(&mut enigo, &[Key::Control], Key::Unicode('f'))?;
+            send_chord(&[Key::Control], Key::Unicode('f'))?;
             if let Some(query) = query {
-                type_text(&mut enigo, query)?;
+                for ch in query.chars() {
+                    send_key_click(Key::Unicode(ch));
+                }
             }
             Ok(())
         }
-        BrowserAction::Fullscreen => send_key_click(&mut enigo, Key::F11),
+        BrowserAction::Fullscreen => Ok(send_key_click(Key::F11)),
         BrowserAction::CopyUrl => {
-            send_chord(&mut enigo, &[Key::Control], Key::Unicode('l'))?;
-            send_chord(&mut enigo, &[Key::Control], Key::Unicode('c'))
+            send_chord(&[Key::Control], Key::Unicode('l'))?;
+            send_chord(&[Key::Control], Key::Unicode('c'))
         }
-        BrowserAction::OpenHistory => send_chord(&mut enigo, &[Key::Control], Key::Unicode('h')),
-        BrowserAction::OpenDownloads => send_chord(&mut enigo, &[Key::Control], Key::Unicode('j')),
-        BrowserAction::OpenDevtools => send_key_click(&mut enigo, Key::F12),
-        BrowserAction::MinimizeWindow => send_chord(&mut enigo, &[Key::Meta], Key::DownArrow),
-        BrowserAction::MaximizeWindow => send_chord(&mut enigo, &[Key::Meta], Key::UpArrow),
+        BrowserAction::OpenHistory => send_chord(&[Key::Control], Key::Unicode('h')),
+        BrowserAction::OpenDownloads => send_chord(&[Key::Control], Key::Unicode('j')),
+        BrowserAction::OpenDevtools => Ok(send_key_click(Key::F12)),
+        BrowserAction::MinimizeWindow => send_chord(&[Key::Meta], Key::DownArrow),
+        BrowserAction::MaximizeWindow => send_chord(&[Key::Meta], Key::UpArrow),
         BrowserAction::NewPrivateWindow => {
-            send_chord(&mut enigo, &[Key::Control, Key::Shift], Key::Unicode('n'))
+            send_chord(&[Key::Control, Key::Shift], Key::Unicode('n'))
         }
     }
 }
 
 pub fn execute_windows_shortcut_action(action: &WindowsAction) -> Result<(), String> {
+    use crate::keyboard::{send_key_click, send_key_press, send_key_release, Key};
+
+    let send_chord = |modifiers: &[Key], key: Key| -> Result<(), String> {
+        for modifier in modifiers {
+            send_key_press(*modifier);
+        }
+        send_key_click(key);
+        for modifier in modifiers.iter().rev() {
+            send_key_release(*modifier);
+        }
+        Ok(())
+    };
+
     match action {
         WindowsAction::OpenTarget { .. } => {
             Err("OpenTarget must be executed via Windows target resolution".to_string())
@@ -1631,62 +1655,16 @@ pub fn execute_windows_shortcut_action(action: &WindowsAction) -> Result<(), Str
             .map(|_| ())
             .map_err(|e| format!("Failed to lock screen: {}", e)),
         other_action => {
-            let mut enigo = Enigo::new(&Settings::default())
-                .map_err(|e| format!("Failed to init keyboard: {:?}", e))?;
-
             match other_action {
-                WindowsAction::ShowDesktop => {
-                    send_chord(&mut enigo, &[Key::Meta], Key::Unicode('d'))
-                }
-                WindowsAction::OpenRunDialog => {
-                    send_chord(&mut enigo, &[Key::Meta], Key::Unicode('r'))
-                }
-                WindowsAction::OpenClipboardHistory => {
-                    send_chord(&mut enigo, &[Key::Meta], Key::Unicode('v'))
-                }
-                WindowsAction::OpenQuickSettings => {
-                    send_chord(&mut enigo, &[Key::Meta], Key::Unicode('a'))
-                }
-                WindowsAction::OpenNotifications => {
-                    send_chord(&mut enigo, &[Key::Meta], Key::Unicode('n'))
-                }
+                WindowsAction::ShowDesktop => send_chord(&[Key::Meta], Key::Unicode('d')),
+                WindowsAction::OpenRunDialog => send_chord(&[Key::Meta], Key::Unicode('r')),
+                WindowsAction::OpenClipboardHistory => send_chord(&[Key::Meta], Key::Unicode('v')),
+                WindowsAction::OpenQuickSettings => send_chord(&[Key::Meta], Key::Unicode('a')),
+                WindowsAction::OpenNotifications => send_chord(&[Key::Meta], Key::Unicode('n')),
                 WindowsAction::OpenTarget { .. } | WindowsAction::LockScreen => unreachable!(),
             }
         }
     }
-}
-
-fn send_key_click(enigo: &mut Enigo, key: Key) -> Result<(), String> {
-    enigo
-        .key(key, Direction::Click)
-        .map_err(|e| format!("Failed to send key: {:?}", e))
-}
-
-fn send_chord(enigo: &mut Enigo, modifiers: &[Key], key: Key) -> Result<(), String> {
-    for modifier in modifiers {
-        enigo
-            .key(*modifier, Direction::Press)
-            .map_err(|e| format!("Failed to press modifier: {:?}", e))?;
-    }
-
-    let key_result = enigo
-        .key(key, Direction::Click)
-        .map_err(|e| format!("Failed to send shortcut: {:?}", e));
-
-    for modifier in modifiers.iter().rev() {
-        let _ = enigo.key(*modifier, Direction::Release);
-    }
-
-    key_result
-}
-
-fn type_text(enigo: &mut Enigo, text: &str) -> Result<(), String> {
-    for ch in text.chars() {
-        enigo
-            .key(Key::Unicode(ch), Direction::Click)
-            .map_err(|e| format!("Failed to type text: {:?}", e))?;
-    }
-    Ok(())
 }
 
 pub fn extract_scene_query(

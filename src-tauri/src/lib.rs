@@ -5,6 +5,7 @@ pub mod commands;
 mod dictation;
 mod http_client;
 mod input_listener;
+pub mod keyboard;
 mod llm;
 mod skill_engine;
 mod skills;

@@ -38,7 +38,7 @@ impl Tool for ClipboardTool {
 
         let result = tokio::task::spawn_blocking(move || {
             use arboard::Clipboard;
-            use enigo::{Enigo, Key, Keyboard, Settings};
+            use crate::keyboard::{send_key_press, send_key_release, send_key_click, Key};
 
             let mut clipboard = Clipboard::new()
                 .map_err(|e| AgentError::Tool(format!("Clipboard init failed: {:?}", e)))?;
@@ -50,20 +50,11 @@ impl Tool for ClipboardTool {
 
             std::thread::sleep(Duration::from_millis(10));
 
-            let mut enigo = Enigo::new(&Settings::default())
-                .map_err(|e| AgentError::Tool(format!("Enigo init failed: {:?}", e)))?;
-
-            enigo
-                .key(Key::Control, enigo::Direction::Press)
-                .map_err(|e| AgentError::Tool(format!("Ctrl press failed: {:?}", e)))?;
+            send_key_press(Key::Control);
             std::thread::sleep(Duration::from_millis(5));
-            enigo
-                .key(Key::Unicode('v'), enigo::Direction::Click)
-                .map_err(|e| AgentError::Tool(format!("V click failed: {:?}", e)))?;
+            send_key_click(Key::Unicode('v'));
             std::thread::sleep(Duration::from_millis(5));
-            enigo
-                .key(Key::Control, enigo::Direction::Release)
-                .map_err(|e| AgentError::Tool(format!("Ctrl release failed: {:?}", e)))?;
+            send_key_release(Key::Control);
 
             // Restore original clipboard after paste
             std::thread::sleep(Duration::from_millis(100));

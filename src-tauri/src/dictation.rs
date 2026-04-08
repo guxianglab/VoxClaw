@@ -2,7 +2,6 @@ use std::sync::atomic::Ordering as AtomicOrdering;
 use std::time::{Duration, Instant};
 
 use arboard::Clipboard;
-use enigo::{Enigo, Key, Keyboard, Settings};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::asr;
@@ -436,27 +435,15 @@ pub fn output_text(text: &str, seq_id: u64) {
         return;
     }
 
+    use crate::keyboard::{send_key_press, send_key_release, send_key_click, Key};
+
     std::thread::sleep(std::time::Duration::from_millis(10));
 
-    let mut enigo = match Enigo::new(&Settings::default()) {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("[OUTPUT] #{} enigo init failed: {:?}", seq_id, e);
-            return;
-        }
-    };
-
-    if let Err(e) = enigo.key(Key::Control, enigo::Direction::Press) {
-        eprintln!("[OUTPUT] #{} Ctrl press failed: {:?}", seq_id, e);
-    }
+    send_key_press(Key::Control);
     std::thread::sleep(std::time::Duration::from_millis(5));
-    if let Err(e) = enigo.key(Key::Unicode('v'), enigo::Direction::Click) {
-        eprintln!("[OUTPUT] #{} V click failed: {:?}", seq_id, e);
-    }
+    send_key_click(Key::Unicode('v'));
     std::thread::sleep(std::time::Duration::from_millis(5));
-    if let Err(e) = enigo.key(Key::Control, enigo::Direction::Release) {
-        eprintln!("[OUTPUT] #{} Ctrl release failed: {:?}", seq_id, e);
-    }
+    send_key_release(Key::Control);
 
     println!("[OUTPUT] #{} paste done", seq_id);
 
@@ -815,7 +802,7 @@ pub fn cancel_pending_agent(agent_cancel: &AgentCancelState, log_tag: &str) {
 
 pub fn get_selected_text_sync() -> String {
     use arboard::Clipboard;
-    use enigo::{Enigo, Key, Keyboard, Settings};
+    use crate::keyboard::{send_key_press, send_key_release, send_key_click, Key};
     use std::time::Duration;
 
     let mut clipboard = match Clipboard::new() {
@@ -828,16 +815,11 @@ pub fn get_selected_text_sync() -> String {
 
     std::thread::sleep(Duration::from_millis(10));
 
-    let mut enigo = match Enigo::new(&Settings::default()) {
-        Ok(e) => e,
-        Err(_) => return String::new(),
-    };
-
-    let _ = enigo.key(Key::Control, enigo::Direction::Press);
+    send_key_press(Key::Control);
     std::thread::sleep(Duration::from_millis(5));
-    let _ = enigo.key(Key::Unicode('c'), enigo::Direction::Click);
+    send_key_click(Key::Unicode('c'));
     std::thread::sleep(Duration::from_millis(5));
-    let _ = enigo.key(Key::Control, enigo::Direction::Release);
+    send_key_release(Key::Control);
     
     std::thread::sleep(Duration::from_millis(50));
 
