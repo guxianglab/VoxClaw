@@ -71,12 +71,6 @@ pub fn process_transcription<R: Runtime>(
             }
 
             app_handle_clone.emit("llm_processing", true).ok();
-            {
-                let listener = app_handle_clone.state::<crate::state::InputListenerState>();
-                listener
-                    .track_mouse_position
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
-            }
             window::show_indicator_window(&app_handle_clone);
 
             // Use tokio::select! to race between LLM request and cancellation
@@ -98,12 +92,6 @@ pub fn process_transcription<R: Runtime>(
             }
 
             app_handle_clone.emit("llm_processing", false).ok();
-            {
-                let listener = app_handle_clone.state::<crate::state::InputListenerState>();
-                listener
-                    .track_mouse_position
-                    .store(false, std::sync::atomic::Ordering::Relaxed);
-            }
             window::emit_dictation_intent(&app_handle_clone, DictationIntent::None);
             window::emit_session_complete(&app_handle_clone);
 
@@ -508,10 +496,6 @@ pub fn begin_recording_session<R: Runtime>(
     };
 
     app_handle.emit("recording_status", true).ok();
-    let listener = app_handle.state::<crate::state::InputListenerState>();
-    listener
-        .track_mouse_position
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     window::emit_dictation_intent(app_handle, intent);
     window::show_indicator_window(app_handle);
 
@@ -555,9 +539,6 @@ pub fn begin_recording_session<R: Runtime>(
         Err(err) => {
             eprintln!("[START] Failed to start streaming preview: {}", err);
             app_handle.emit("recording_status", false).ok();
-            listener
-                .track_mouse_position
-                .store(false, std::sync::atomic::Ordering::Relaxed);
             window::emit_dictation_intent(app_handle, DictationIntent::None);
             window::emit_session_complete(app_handle);
             if let Ok(audio) = app_handle.state::<AudioState>().lock() {
@@ -572,10 +553,6 @@ pub fn stop_recording_now<R: Runtime>(app_handle: &AppHandle<R>) -> (Vec<f32>, u
     use crate::state::AudioState;
 
     app_handle.emit("recording_status", false).ok();
-    let listener = app_handle.state::<crate::state::InputListenerState>();
-    listener
-        .track_mouse_position
-        .store(false, std::sync::atomic::Ordering::Relaxed);
 
     let audio = app_handle.state::<AudioState>();
     let mut buffer = Vec::new();

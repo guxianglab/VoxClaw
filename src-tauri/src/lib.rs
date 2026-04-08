@@ -305,9 +305,6 @@ pub fn run() {
                                 }
                             }
                         }
-                        InputEvent::MouseMove => {
-                            // Mouse movement detected - indicator stays at bottom-center
-                        }
                         InputEvent::StartSkill => {
                             if !matches!(dictation_state, DictationState::Idle) {
                                 continue;

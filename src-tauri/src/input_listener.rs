@@ -1,7 +1,7 @@
 use rdev::{grab, Button, Event, EventType, Key};
 use std::sync::mpsc::Sender;
 use std::sync::{
-    atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
 use std::thread;
@@ -14,7 +14,6 @@ pub enum InputEvent {
     Click,
     StartSkill,
     StopSkill,
-    MouseMove,
     DictationFinalizeWindowElapsed {
         session_id: u64,
     },
@@ -24,25 +23,9 @@ pub enum InputEvent {
     },
 }
 
-#[inline]
-fn pack_position(x: f64, y: f64) -> i64 {
-    let x_i32 = x as i32;
-    let y_i32 = y as i32;
-    ((x_i32 as i64) << 32) | (y_i32 as u32 as i64)
-}
-
-#[inline]
-fn unpack_position(packed: i64) -> (f64, f64) {
-    let x = (packed >> 32) as i32 as f64;
-    let y = packed as i32 as f64;
-    (x, y)
-}
-
 pub struct InputListener {
     pub enable_mouse: Arc<AtomicBool>,
     pub enable_alt: Arc<AtomicBool>,
-    pub track_mouse_position: Arc<AtomicBool>,
-    pub last_mouse_position: Arc<AtomicI64>,
 }
 
 impl InputListener {
@@ -50,20 +33,12 @@ impl InputListener {
         Self {
             enable_mouse: Arc::new(AtomicBool::new(true)),
             enable_alt: Arc::new(AtomicBool::new(true)),
-            track_mouse_position: Arc::new(AtomicBool::new(false)),
-            last_mouse_position: Arc::new(AtomicI64::new(0)),
         }
-    }
-
-    pub fn get_last_mouse_position(&self) -> (f64, f64) {
-        unpack_position(self.last_mouse_position.load(Ordering::Relaxed))
     }
 
     pub fn start(&self, tx: Sender<InputEvent>) {
         let enable_mouse = self.enable_mouse.clone();
         let enable_alt = self.enable_alt.clone();
-        let track_mouse_position = self.track_mouse_position.clone();
-        let last_mouse_position = self.last_mouse_position.clone();
         let middle_trigger = HoldTrigger::new();
         let alt_trigger = HoldTrigger::new();
 
@@ -94,13 +69,6 @@ impl InputListener {
                         if enable_alt.load(Ordering::Relaxed) {
                             alt_trigger.on_release(&tx);
                             swallow_event = true;
-                        }
-                    }
-                    EventType::MouseMove { x, y } => {
-                        last_mouse_position.store(pack_position(x, y), Ordering::Relaxed);
-
-                        if track_mouse_position.load(Ordering::Relaxed) {
-                            tx.send(InputEvent::MouseMove).ok();
                         }
                     }
                     _ => {}

@@ -987,7 +987,58 @@
       } else if (data.type === 'tool_execution_end') {
         const el = data.call_id ? toolEntryMap.get(data.call_id) : null;
         const ok = !(data.result && data.result.is_error);
+        
+        const resultString = (data.result && data.result.output) || '';
         if (el) {
+          if (resultString.trim().length > 0) {
+            const details = document.createElement('details');
+            details.style.fontSize = '11px';
+            details.style.marginTop = '6px';
+            details.style.marginLeft = '26px'; // Align under text
+            details.style.color = '#64748b';
+            
+            const summary = document.createElement('summary');
+            summary.textContent = ok ? '查看调用结果' : '查看错误日志';
+            summary.style.cursor = 'pointer';
+            summary.style.userSelect = 'none';
+            summary.style.outline = 'none';
+            summary.style.opacity = '0.8';
+            summary.style.transition = 'opacity 0.2s';
+            summary.onmouseenter = () => summary.style.opacity = '1';
+            summary.onmouseleave = () => summary.style.opacity = '0.8';
+            
+            const pre = document.createElement('pre');
+            pre.style.background = 'rgba(241, 245, 249, 0.8)';
+            pre.style.padding = '8px';
+            pre.style.borderRadius = '6px';
+            pre.style.marginTop = '4px';
+            pre.style.maxHeight = '120px';
+            pre.style.overflowY = 'auto';
+            pre.style.whiteSpace = 'pre-wrap';
+            pre.style.wordBreak = 'break-word';
+            pre.className = 'custom-scroll';
+            pre.textContent = truncate(resultString, 5000); // cap size
+            
+            details.appendChild(summary);
+            details.appendChild(pre);
+            
+            // Re-structure to wrap content correctly
+            const firstRow = document.createElement('div');
+            firstRow.style.display = 'flex';
+            firstRow.style.gap = '10px';
+            firstRow.style.width = '100%';
+            
+            // Move icon and text into firstRow
+            while (el.firstChild) {
+                firstRow.appendChild(el.firstChild);
+            }
+            
+            el.style.flexDirection = 'column';
+            el.style.alignItems = 'stretch';
+            el.appendChild(firstRow);
+            el.appendChild(details);
+          }
+
           el.classList.remove('running');
           el.classList.add(ok ? 'success' : 'error');
           const iconEl = el.querySelector('.feed-icon');
