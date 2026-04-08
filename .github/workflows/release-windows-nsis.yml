@@ -41,6 +41,16 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Sync version from tag
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag.TrimStart('v')
+          $packageJson = Get-Content -Path package.json | ConvertFrom-Json
+          $packageJson.version = $version
+          $packageJson | ConvertTo-Json -Depth 100 | Set-Content -Path package.json
+          Write-Host "Updated package.json version to $version for build"
+
       - name: Build Windows NSIS installer
         run: pnpm tauri build
 
