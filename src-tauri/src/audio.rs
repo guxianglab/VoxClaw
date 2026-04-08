@@ -316,8 +316,63 @@ fn build_input_stream<R: tauri::Runtime>(
     state: Arc<SharedState>,
     app_handle: tauri::AppHandle<R>,
 ) -> Result<cpal::Stream> {
-    let err_fn = |err: cpal::StreamError| {
-        eprintln!("[AUDIO] cpal stream error: {}", err);
+    let err_fn = {
+        let app_handle = app_handle.clone();
+        move |err: cpal::StreamError| {
+            eprintln!("[AUDIO] cpal stream error: {}", err);
+            match err {
+                cpal::StreamError::DeviceNotAvailable => {
+                    eprintln!("[AUDIO] Device disconnected, initiating auto-recovery in background...");
+                    let app_handle = app_handle.clone();
+                    
+                    // Trigger a background worker to try auto-reconnecting
+                    tauri::async_runtime::spawn(async move {
+                        use tauri::Manager;
+                        use tauri::Emitter;
+                        
+                        // Notify frontend it dropped
+                        let _ = app_handle.emit("audio_device_disconnected", "");
+
+                        // We will try up to 3 times to get the device back with exponential backoff
+                        let mut backoff_secs = 2;
+                        
+                        for attempt in 1..=3 {
+                            eprintln!("[AUDIO] Auto-reconnect attempt {} in {} seconds...", attempt, backoff_secs);
+                            tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
+                            
+                            // 1. Fetch current target device from storage config
+                            let device_id = if let Some(storage) = app_handle.try_state::<crate::state::StorageState>() {
+                                storage.load_config().input_device
+                            } else {
+                                String::new()
+                            };
+                            
+                            // 2. Perform the reset mapping
+                            let mut success = false;
+                            if let Some(audio_state) = app_handle.try_state::<crate::state::AudioState>() {
+                                if let Ok(mut audio) = audio_state.lock() {
+                                    if let Err(e) = audio.init_with_device(&device_id, app_handle.clone()) {
+                                        eprintln!("[AUDIO] Auto-recovery attempt {} failed: {}", attempt, e);
+                                    } else {
+                                        success = true;
+                                    }
+                                }
+                            }
+                            
+                            if success {
+                                eprintln!("[AUDIO] Auto-recovery successful!");
+                                // Notify frontend that UI can sync state if necessary
+                                let _ = app_handle.emit("audio_reconnected", "");
+                                break;
+                            } else {
+                                backoff_secs *= 2; // e.g. 2s -> 4s -> 8s
+                            }
+                        }
+                    });
+                }
+                _ => {}
+            }
+        }
     };
 
     // 使用统一的字节级回调，避免泛型地狱和 trait bound 问题
