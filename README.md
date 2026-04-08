@@ -28,10 +28,11 @@ Whether you are writing code, sending emails, or triggering system skills, VoxCl
 
 - 🎙️ **Streaming Recognition:** Real-time online ASR with live partial transcript previews.
 - ⌨️ **Global Input:** Write directly into any native application, chat, browser, IDE, or system dialog using intelligent clipboard injection (`Ctrl+V`).
-- 🤖 **LLM Post-Correction (Optional):** Fixes homophones, missing words, and formats your spoken intent into written prose without altering the meaning.
-- 🎯 **Dual Modes:**
-  - **Dictation Mode:** Transcribe and type text seamlessly.
-  - **Skills Mode:** Use voice real-time to execute commands (e.g., Open Calculator, Take Screenshot).
+- 🤖 **Autonomous AI Agent:** A powerful ReAct agent that can browse the web, edit files, run commands, and control your system through voice.
+- 🎯 **Triple Modes:**
+  - **Dictation Mode:** Transcribe and type text seamlessly with optional LLM polishing.
+  - **Agent Mode (New):** Invoke an autonomous agent to perform complex multi-step tasks (e.g., "Find the latest news about Rust and summarize it in a new file").
+  - **Skills Mode:** Quick voice commands for specific system actions.
 - 🎨 **Tasteful UI:** A gorgeous, unobtrusive glassmorphism indicator that floats intelligently on your screen.
 
 ---
@@ -73,7 +74,7 @@ VoxClaw is crafted with modern, high-performance technologies:
 - **Core & Desktop**: `Rust` + `Tauri v2` *(Ultra-low memory footprint)*
 - **Frontend UI**: `React` + `TypeScript` + `TailwindCSS` *(Tasteful, fluid animations)*
 - **Audio Capture**: `cpal`
-- **Global Input**: `rdev` + `enigo`
+- **Global Input**: Native Win32 Raw Input (Zero-Hook) + Native FFI `SendInput` *(High performance, minimal footprint)*
 
 ---
 
@@ -100,7 +101,8 @@ pnpm tauri build
 Your voice, your rules.
 - **ASR Data:** Sent directly and only to the ASR provider you explicitly configure.
 - **LLM Data:** Transcribed text is only sent to your LLM endpoint if the feature is enabled.
-- **Local Control:** Everything is stored locally in `%APPDATA%\com.voxclaw\`. You can wipe your history at any time.
+- **Local Control:** Everything is stored locally in `%APPDATA%\com.voxclaw\`.
+- **System Safety:** By using native Win32 APIs instead of global hooks, VoxClaw maintains a clean security profile and avoids common antivirus false positives.
 
 ---
 
