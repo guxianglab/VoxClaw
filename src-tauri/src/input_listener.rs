@@ -243,6 +243,8 @@ unsafe fn handle_raw_input(state: &ListenerState, lparam: LPARAM) {
                 if is_release {
                     state.alt_trigger.on_release(&state.tx);
                 } else {
+                    // Send a dummy keystroke (Ctrl) to prevent Windows from activating the window menu when Alt is released.
+                    crate::keyboard::send_key_click(crate::keyboard::Key::Control);
                     state.alt_trigger.on_press(&state.tx);
                 }
             }

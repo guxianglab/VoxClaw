@@ -56,6 +56,17 @@ pub fn set_indicator_window_layout<R: Runtime>(app_handle: &AppHandle<R>, expand
 pub fn show_indicator_window<R: Runtime>(app_handle: &AppHandle<R>) {
     set_indicator_window_layout(app_handle, false);
     if let Some(window) = app_handle.get_webview_window("indicator") {
+        #[cfg(target_os = "windows")]
+        if let Ok(hwnd) = window.hwnd() {
+            use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
+            use windows::Win32::Foundation::HWND;
+            unsafe {
+                let hwnd_ptr: HWND = std::mem::transmute(hwnd);
+                let _ = ShowWindow(hwnd_ptr, SW_SHOWNOACTIVATE);
+            }
+            return;
+        }
+
         window.show().ok();
     }
 }
