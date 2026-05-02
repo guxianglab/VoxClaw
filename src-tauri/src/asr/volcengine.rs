@@ -1,3 +1,10 @@
+//! Volcengine bigmodel SAUC streaming ASR provider.
+//!
+//! This file is a near-verbatim move of the original `src/asr.rs` (cloud
+//! WebSocket implementation), adapted to the [`super::AsrProvider`] trait.
+//! Behavioural changes vs. the original are intentionally minimal: only the
+//! public surface (struct names, constructor, `finish_and_wait`) was reshaped.
+
 use anyhow::{anyhow, Result};
 use base64::Engine;
 use flate2::write::GzEncoder;
@@ -16,51 +23,52 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::HeaderValue;
 use tokio_tungstenite::tungstenite::{self, Message};
 
+use crate::storage::{OnlineAsrConfig, ProxyConfig};
+
+use super::{AsrCapabilities, AsrProvider, AsrSession, AsrStreamParams};
+
 const ASYNC_URL: &str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async";
 const ASR_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const ASR_FINAL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Clone)]
-pub struct AsrService {}
-
-pub struct StreamingSession {
-    handle: Option<JoinHandle<Result<String>>>,
-    tx: Option<mpsc::Sender<Vec<f32>>>,
+pub struct VolcengineProvider {
+    config: OnlineAsrConfig,
+    proxy: ProxyConfig,
 }
 
-impl StreamingSession {
-    pub fn finish_and_wait(mut self) -> Result<String> {
-        self.tx.take();
-        if let Some(handle) = self.handle.take() {
-            match handle.join() {
-                Ok(result) => result,
-                Err(_) => Err(anyhow!("Transcription thread panicked")),
-            }
-        } else {
-            Err(anyhow!("Session already finished"))
+impl VolcengineProvider {
+    pub fn new(config: OnlineAsrConfig, proxy: ProxyConfig) -> Self {
+        Self { config, proxy }
+    }
+}
+
+impl AsrProvider for VolcengineProvider {
+    fn name(&self) -> &'static str {
+        "volcengine"
+    }
+
+    fn capabilities(&self) -> AsrCapabilities {
+        AsrCapabilities {
+            streaming: true,
+            offline: false,
+            languages: vec!["zh-CN".to_string()],
+            supports_diarization: false,
         }
     }
-}
 
-impl AsrService {
-    pub fn new() -> Self {
-        Self {}
-    }
+    fn start_streaming(&self, params: AsrStreamParams) -> Result<Box<dyn AsrSession>> {
+        let AsrStreamParams {
+            audio_rx,
+            sample_rate,
+            on_update,
+        } = params;
+        let config = self.config.clone();
+        let proxy = self.proxy.clone();
 
-    pub fn start_streaming_session<F>(
-        &self,
-        audio_rx: std::sync::mpsc::Receiver<Vec<f32>>,
-        sample_rate: u32,
-        config: crate::storage::OnlineAsrConfig,
-        proxy: crate::storage::ProxyConfig,
-        on_update: F,
-    ) -> Result<StreamingSession>
-    where
-        F: Fn(String) + Send + 'static,
-    {
         let (tx, mut async_rx) = mpsc::channel::<Vec<f32>>(100);
 
-        // A thread to bridge sync receiver to async receiver
+        // Bridge sync mpsc → async mpsc.
         let tx_clone = tx.clone();
         thread::spawn(move || {
             while let Ok(data) = audio_rx.recv() {
@@ -70,7 +78,7 @@ impl AsrService {
             }
         });
 
-        // Main streaming thread
+        // Main streaming thread: owns its own current-thread Tokio runtime.
         let handle = thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -183,10 +191,8 @@ impl AsrService {
 
                                 let mut offset = header_len;
                                 if msg_type == 0b1111 {
-                                    // Error message includes a 4-byte Error code
                                     offset += 4;
                                 } else if flags == 0b0001 || flags == 0b0011 {
-                                    // Contains sequence number
                                     offset += 4;
                                 }
 
@@ -210,7 +216,6 @@ impl AsrService {
                                 };
 
                                 if msg_type == 0b1001 || msg_type == 0b1011 {
-                                    // Full or Partial response
                                     if let Ok(json_str) = String::from_utf8(decompressed) {
                                         if let Ok(json_val) =
                                             serde_json::from_str::<serde_json::Value>(&json_str)
@@ -229,7 +234,6 @@ impl AsrService {
                                         }
                                     }
                                 } else if msg_type == 0b1111 {
-                                    // Error
                                     let msg_str = String::from_utf8_lossy(&decompressed);
                                     eprintln!("[ASR] Server error: {}", msg_str);
                                 }
@@ -276,7 +280,6 @@ impl AsrService {
                 let _ = write.send(Message::Binary(final_msg.into())).await;
                 let _ = write.close().await;
 
-                // Once the last audio packet is sent, the server should finish quickly.
                 match timeout(ASR_FINAL_RESPONSE_TIMEOUT, read_task).await {
                     Ok(join_result) => Ok(join_result.unwrap_or_default()),
                     Err(_) => Err(anyhow!(
@@ -287,10 +290,29 @@ impl AsrService {
             })
         });
 
-        Ok(StreamingSession {
+        Ok(Box::new(VolcengineSession {
             handle: Some(handle),
             tx: Some(tx),
-        })
+        }))
+    }
+}
+
+pub struct VolcengineSession {
+    handle: Option<JoinHandle<Result<String>>>,
+    tx: Option<mpsc::Sender<Vec<f32>>>,
+}
+
+impl AsrSession for VolcengineSession {
+    fn finish_and_wait(mut self: Box<Self>) -> Result<String> {
+        // Drop the sender so the streaming task drains and closes the WS.
+        self.tx.take();
+        match self.handle.take() {
+            Some(handle) => match handle.join() {
+                Ok(result) => result,
+                Err(_) => Err(anyhow!("Transcription thread panicked")),
+            },
+            None => Err(anyhow!("Session already finished")),
+        }
     }
 }
 
@@ -301,7 +323,7 @@ type BoxedStream = Box<dyn AsyncIo>;
 
 async fn connect_ws(
     request: tungstenite::http::Request<()>,
-    proxy: &crate::storage::ProxyConfig,
+    proxy: &ProxyConfig,
 ) -> Result<(
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<BoxedStream>>,
     tungstenite::handshake::client::Response,
@@ -311,7 +333,7 @@ async fn connect_ws(
     Ok(response)
 }
 
-async fn connect_stream(url: &str, proxy: &crate::storage::ProxyConfig) -> Result<BoxedStream> {
+async fn connect_stream(url: &str, proxy: &ProxyConfig) -> Result<BoxedStream> {
     let target = reqwest::Url::parse(url)?;
     let host = target
         .host_str()

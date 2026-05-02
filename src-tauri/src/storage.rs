@@ -459,6 +459,48 @@ pub struct OnlineAsrConfig {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AsrProviderKind {
+    #[default]
+    Volcengine,
+    SenseVoiceOnnx,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SenseVoiceOnnxConfig {
+    #[serde(default)]
+    pub model_dir: String,
+    #[serde(default = "default_sensevoice_language")]
+    pub language: String,
+    #[serde(default)]
+    pub use_gpu: bool,
+}
+
+impl Default for SenseVoiceOnnxConfig {
+    fn default() -> Self {
+        Self {
+            model_dir: String::new(),
+            language: default_sensevoice_language(),
+            use_gpu: false,
+        }
+    }
+}
+
+fn default_sensevoice_language() -> String {
+    "auto".to_string()
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct AsrConfig {
+    #[serde(default)]
+    pub provider: AsrProviderKind,
+    #[serde(default)]
+    pub volcengine: OnlineAsrConfig,
+    #[serde(default)]
+    pub sensevoice: SenseVoiceOnnxConfig,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SkillAgentMode {
     #[default]
@@ -512,7 +554,41 @@ pub struct AgentConfig {
     pub persistent_context: String,
     #[serde(default = "default_context_history_count")]
     pub context_history_count: usize,
+    /// When true, dictation reuses the previous session id so the agent can
+    /// hold a multi-turn conversation across utterances.
+    #[serde(default)]
+    pub continuous_mode: bool,
+    #[serde(default)]
+    pub compaction: CompactionSettings,
 }
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CompactionSettings {
+    /// Master switch. When false the agent never compacts.
+    #[serde(default = "default_compaction_enabled")]
+    pub enabled: bool,
+    /// Tokens to keep in reserve below the model's context window.
+    /// Compaction triggers when (estimated tokens) > (window - reserve).
+    #[serde(default = "default_reserve_tokens")]
+    pub reserve_tokens: u32,
+    /// Tokens of recent history to preserve verbatim (everything older may be summarized).
+    #[serde(default = "default_keep_recent_tokens")]
+    pub keep_recent_tokens: u32,
+}
+
+impl Default for CompactionSettings {
+    fn default() -> Self {
+        Self {
+            enabled: default_compaction_enabled(),
+            reserve_tokens: default_reserve_tokens(),
+            keep_recent_tokens: default_keep_recent_tokens(),
+        }
+    }
+}
+
+fn default_compaction_enabled() -> bool { true }
+fn default_reserve_tokens() -> u32 { 16384 }
+fn default_keep_recent_tokens() -> u32 { 20000 }
 
 impl Default for AgentConfig {
     fn default() -> Self {
@@ -533,6 +609,8 @@ impl Default for AgentConfig {
             auto_inject_env: false,
             persistent_context: String::new(),
             context_history_count: default_context_history_count(),
+            continuous_mode: false,
+            compaction: CompactionSettings::default(),
         }
     }
 }
@@ -554,7 +632,7 @@ pub struct AppConfig {
     pub trigger_mouse: bool,
     pub trigger_toggle: bool,
     #[serde(default)]
-    pub online_asr_config: OnlineAsrConfig,
+    pub asr: AsrConfig,
     #[serde(default)]
     pub input_device: String,
     #[serde(default)]
@@ -572,10 +650,14 @@ impl Default for AppConfig {
         Self {
             trigger_mouse: true,
             trigger_toggle: true,
-            online_asr_config: OnlineAsrConfig {
-                app_key: String::new(),
-                access_key: String::new(),
-                resource_id: "volc.bigasr.sauc.duration".to_string(),
+            asr: AsrConfig {
+                provider: AsrProviderKind::Volcengine,
+                volcengine: OnlineAsrConfig {
+                    app_key: String::new(),
+                    access_key: String::new(),
+                    resource_id: "volc.bigasr.sauc.duration".to_string(),
+                },
+                sensevoice: SenseVoiceOnnxConfig::default(),
             },
             input_device: String::new(),
             llm_config: LlmConfig::default(),
@@ -594,17 +676,110 @@ pub struct HistoryItem {
     pub duration_ms: u64,
 }
 
+// ---------------------------------------------------------------------------
+// Meeting records
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum MeetingAudioSource {
+    MicOnly,
+    LoopbackOnly,
+    MicAndLoopback,
+}
+
+impl Default for MeetingAudioSource {
+    fn default() -> Self {
+        Self::MicAndLoopback
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct MeetingSegment {
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub text: String,
+    #[serde(default)]
+    pub speaker: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum MeetingStatus {
+    Recording,
+    Finalizing,
+    /// Original ASR text only; LLM correction/summary not yet attempted.
+    RawOnly,
+    /// LLM correction succeeded.
+    Corrected,
+    /// LLM correction + summary succeeded.
+    Summarized,
+    /// LLM step failed at least once; raw text is still available.
+    Failed,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct MeetingSummary {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub key_points: Vec<String>,
+    #[serde(default)]
+    pub todos: Vec<String>,
+    #[serde(default)]
+    pub decisions: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct MeetingRecord {
+    pub id: String,
+    pub started_at: String,
+    #[serde(default)]
+    pub ended_at: Option<String>,
+    pub duration_ms: u64,
+    pub audio_source: MeetingAudioSource,
+    pub asr_provider: String,
+    pub status: MeetingStatus,
+    #[serde(default)]
+    pub segments: Vec<MeetingSegment>,
+    #[serde(default)]
+    pub raw_text: String,
+    #[serde(default)]
+    pub corrected_text: Option<String>,
+    #[serde(default)]
+    pub summary: Option<MeetingSummary>,
+    #[serde(default)]
+    pub last_error: Option<String>,
+    #[serde(default)]
+    pub draft_audio_path: Option<String>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct MeetingSummaryItem {
+    pub id: String,
+    pub started_at: String,
+    pub duration_ms: u64,
+    pub status: MeetingStatus,
+    pub title: String,
+}
+
 enum StorageOp {
     AddHistory(HistoryItem),
     DeleteHistoryItem(String),
     ClearHistory,
+    SaveMeeting(MeetingRecord),
+    DeleteMeeting(String),
 }
 
 pub struct StorageService {
     config_path: PathBuf,
     history_path: PathBuf,
+    meetings_dir: PathBuf,
     write_tx: Sender<StorageOp>,
     runtime_notice: Mutex<Option<String>>,
+    /// Active continuous-mode session id. `None` means each utterance starts a
+    /// fresh session.
+    current_session_id: Mutex<Option<String>>,
 }
 
 struct ConfigLoadResult {
@@ -621,8 +796,13 @@ impl StorageService {
 
         let config_path = app_dir.join("config.json");
         let history_path = app_dir.join("history.json");
+        let meetings_dir = app_dir.join("meetings");
+        if !meetings_dir.exists() {
+            fs::create_dir_all(&meetings_dir).ok();
+        }
         let (tx, rx) = channel::<StorageOp>();
         let history_path_clone = history_path.clone();
+        let meetings_dir_clone = meetings_dir.clone();
 
         thread::spawn(move || {
             for op in rx {
@@ -654,6 +834,23 @@ impl StorageService {
                     StorageOp::ClearHistory => {
                         let _ = fs::write(&history_path_clone, "[]");
                     }
+                    StorageOp::SaveMeeting(record) => {
+                        let path = meetings_dir_clone.join(format!("{}.json", record.id));
+                        if let Ok(content) = serde_json::to_string_pretty(&record) {
+                            let _ = fs::write(&path, content);
+                        }
+                    }
+                    StorageOp::DeleteMeeting(id) => {
+                        let path = meetings_dir_clone.join(format!("{}.json", id));
+                        if let Ok(content) = fs::read_to_string(&path) {
+                            if let Ok(record) = serde_json::from_str::<MeetingRecord>(&content) {
+                                if let Some(draft_audio_path) = record.draft_audio_path {
+                                    let _ = fs::remove_file(draft_audio_path);
+                                }
+                            }
+                        }
+                        let _ = fs::remove_file(&path);
+                    }
                 }
             }
         });
@@ -661,8 +858,22 @@ impl StorageService {
         Self {
             config_path,
             history_path,
+            meetings_dir,
             write_tx: tx,
             runtime_notice: Mutex::new(None),
+            current_session_id: Mutex::new(None),
+        }
+    }
+
+    /// Get the active continuous-mode session id, if any.
+    pub fn current_session_id(&self) -> Option<String> {
+        self.current_session_id.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// Set or clear the active continuous-mode session id.
+    pub fn set_current_session_id(&self, id: Option<String>) {
+        if let Ok(mut g) = self.current_session_id.lock() {
+            *g = id;
         }
     }
 
@@ -711,6 +922,58 @@ impl StorageService {
     pub fn clear_history(&self) -> Result<()> {
         self.write_tx.send(StorageOp::ClearHistory)?;
         Ok(())
+    }
+
+    // ─── meetings ───
+
+    pub fn save_meeting(&self, record: MeetingRecord) -> Result<()> {
+        self.write_tx.send(StorageOp::SaveMeeting(record))?;
+        Ok(())
+    }
+
+    pub fn delete_meeting(&self, id: String) -> Result<()> {
+        self.write_tx.send(StorageOp::DeleteMeeting(id))?;
+        Ok(())
+    }
+
+    pub fn load_meeting(&self, id: &str) -> Option<MeetingRecord> {
+        let path = self.meetings_dir.join(format!("{}.json", id));
+        let content = fs::read_to_string(path).ok()?;
+        serde_json::from_str(&content).ok()
+    }
+
+    pub fn list_meetings(&self) -> Vec<MeetingSummaryItem> {
+        let mut items = Vec::new();
+        let Ok(read_dir) = fs::read_dir(&self.meetings_dir) else {
+            return items;
+        };
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(content) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(record) = serde_json::from_str::<MeetingRecord>(&content) else {
+                continue;
+            };
+            let title = record
+                .summary
+                .as_ref()
+                .map(|s| s.title.clone())
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| record.started_at.clone());
+            items.push(MeetingSummaryItem {
+                id: record.id,
+                started_at: record.started_at,
+                duration_ms: record.duration_ms,
+                status: record.status,
+                title,
+            });
+        }
+        items.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        items
     }
 
     pub fn take_runtime_notice(&self) -> Option<String> {
@@ -776,12 +1039,26 @@ fn recover_app_config_from_object(
         needs_save = true;
     }
 
+    let asr_config = if obj.contains_key("asr") {
+        read_value::<AsrConfig>(&obj, "asr").unwrap_or_default()
+    } else if let Some(legacy) = read_value::<OnlineAsrConfig>(&obj, "online_asr_config") {
+        // Migrate legacy `online_asr_config` field to new `asr.volcengine`.
+        needs_save = true;
+        AsrConfig {
+            provider: AsrProviderKind::Volcengine,
+            volcengine: legacy,
+            sensevoice: SenseVoiceOnnxConfig::default(),
+        }
+    } else {
+        AsrConfig::default()
+    };
+
     let config = AppConfig {
         trigger_mouse: read_bool(&obj, "trigger_mouse").unwrap_or(true),
         trigger_toggle: read_bool(&obj, "trigger_hold")
             .or_else(|| read_bool(&obj, "trigger_toggle"))
             .unwrap_or(true),
-        online_asr_config: read_value(&obj, "online_asr_config").unwrap_or_default(),
+        asr: asr_config,
         input_device: read_string(&obj, "input_device").unwrap_or_default(),
         llm_config,
         proxy: read_value(&obj, "proxy").unwrap_or_default(),

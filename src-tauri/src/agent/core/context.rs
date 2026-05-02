@@ -24,10 +24,14 @@ impl ContextConverter for DefaultConverter {
                 AgentMessage::System { content } => {
                     result.push(LlmMessage::system(content));
                 }
-                AgentMessage::User { content, .. } => {
-                    let UserContent::Text(text) = content;
-                    result.push(LlmMessage::user(text));
-                }
+                AgentMessage::User { content, .. } => match content {
+                    UserContent::Text(text) => result.push(LlmMessage::user(text)),
+                    // Phase 1 stub: providers don't accept images yet, so we
+                    // surface a placeholder to keep the conversation aligned.
+                    UserContent::Image { mime_type, data } => result.push(LlmMessage::user(
+                        format!("[user image attachment: {} ({} bytes)]", mime_type, data.len()),
+                    )),
+                },
                 AgentMessage::Assistant { content, tool_calls, .. } => {
                     if !tool_calls.is_empty() {
                         let calls: Vec<LlmToolCall> = tool_calls
@@ -50,10 +54,21 @@ impl ContextConverter for DefaultConverter {
                     tool_call_id,
                     content,
                     ..
-                } => {
-                    let ToolResultContent::Text(text) = content;
-                    result.push(LlmMessage::tool_result(tool_call_id, text));
-                }
+                } => match content {
+                    ToolResultContent::Text(text) => {
+                        result.push(LlmMessage::tool_result(tool_call_id, text));
+                    }
+                    ToolResultContent::Image { mime_type, data } => {
+                        result.push(LlmMessage::tool_result(
+                            tool_call_id,
+                            format!(
+                                "[tool returned image: {} ({} bytes)]",
+                                mime_type,
+                                data.len()
+                            ),
+                        ));
+                    }
+                },
             }
         }
         result
@@ -129,12 +144,18 @@ impl ContextTransformer for TokenBudgetTransformer {
 fn estimate_chars(msg: &AgentMessage) -> usize {
     match msg {
         AgentMessage::System { content } => content.len(),
-        AgentMessage::User { content, .. } => match content { UserContent::Text(t) => t.len(), },
+        AgentMessage::User { content, .. } => match content {
+            UserContent::Text(t) => t.len(),
+            UserContent::Image { data, .. } => data.len() / 4, // rough proxy for tokens
+        },
         AgentMessage::Assistant { content, tool_calls, .. } => {
             content.as_ref().map(|c| c.len()).unwrap_or(0)
                 + tool_calls.iter().map(|tc| tc.arguments.len()).sum::<usize>()
         }
-        AgentMessage::ToolResult { content, .. } => match content { ToolResultContent::Text(t) => t.len(), },
+        AgentMessage::ToolResult { content, .. } => match content {
+            ToolResultContent::Text(t) => t.len(),
+            ToolResultContent::Image { data, .. } => data.len() / 4,
+        },
     }
 }
 

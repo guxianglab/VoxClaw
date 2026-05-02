@@ -86,6 +86,12 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
   const [isSaving, setIsSaving] = useState(false);
   const [saveOk, setSaveOk] = useState(false);
   const [activeTab, setActiveTab] = useState<SettingsTab>("audio");
+  const [modelDownload, setModelDownload] = useState<{
+    active: boolean;
+    file: string;
+    progress: number;
+    error: string | null;
+  }>({ active: false, file: "", progress: 0, error: null });
   const timerRef = useRef<number | null>(null);
   const pendingRef = useRef<AppConfig | null>(null);
 
@@ -158,6 +164,52 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
     };
   }, [isOpen]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const unsub = events.onAsrModelDownload((evt) => {
+      if (evt.phase === "started") {
+        setModelDownload({ active: true, file: "", progress: 0, error: null });
+      } else if (evt.phase === "file") {
+        const ratio = evt.size && evt.size > 0 ? evt.downloaded / evt.size : 0;
+        const overall = (evt.index - 1 + ratio) / Math.max(1, evt.total);
+        setModelDownload({ active: true, file: evt.name, progress: overall, error: null });
+      } else if (evt.phase === "finished") {
+        setModelDownload({ active: false, file: "", progress: 1, error: null });
+      } else if (evt.phase === "failed") {
+        setModelDownload({ active: false, file: "", progress: 0, error: evt.message });
+      }
+    });
+    return () => {
+      unsub.then((fn) => fn());
+    };
+  }, [isOpen]);
+
+  const handleDownloadSenseVoice = useCallback(async () => {
+    if (!config) return;
+    setModelDownload({ active: true, file: "", progress: 0, error: null });
+    try {
+      const dir = await api.downloadSenseVoiceModel(
+        config.asr.sensevoice.model_dir || undefined,
+      );
+      const next = {
+        ...config,
+        asr: {
+          ...config.asr,
+          sensevoice: { ...config.asr.sensevoice, model_dir: dir },
+        },
+      };
+      setConfig(next);
+      saveLater(next);
+    } catch (e) {
+      setModelDownload({
+        active: false,
+        file: "",
+        progress: 0,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }, [config, saveLater]);
+
   if (!isOpen || !config) return null;
 
   const updateConfig = <K extends keyof AppConfig>(key: K, value: AppConfig[K]) => {
@@ -184,7 +236,7 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
     );
   };
 
-  const updateAgentConfig = (key: string, value: string | number | boolean) => {
+  const updateAgentConfig = (key: string, value: string | number | boolean | object) => {
     const next = {
       ...config,
       agent_config: { ...config.agent_config, [key]: value },
@@ -449,7 +501,11 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
   };
 
   const close = async () => {
-    const ready = !!config.input_device && !!config.online_asr_config.app_key && !!config.online_asr_config.access_key && !!config.llm_config.base_url && !!config.llm_config.api_key;
+    const asrReady =
+      config.asr.provider === "sense_voice_onnx"
+        ? !!config.asr.sensevoice.model_dir
+        : !!config.asr.volcengine.app_key && !!config.asr.volcengine.access_key;
+    const ready = !!config.input_device && asrReady && !!config.llm_config.base_url && !!config.llm_config.api_key;
     if (isFirstSetup && !ready) {
       setShowWarning(true);
       return;
@@ -562,37 +618,152 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
 
             {activeTab === "models" && (
               <div className="space-y-5">
-                <Section title="流式语音识别">
-                  <div className="mb-4 rounded-md bg-neutral-100 px-4 py-3">
-                    <div className="flex items-center gap-2 text-sm">
-                      <span className="font-medium text-neutral-700">豆包</span>
-                      <span className="text-neutral-400">·</span>
-                      <span className="text-neutral-500">火山引擎流式语音识别服务</span>
-                    </div>
-                  </div>
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <Field
-                      label="app_key"
-                      value={config.online_asr_config.app_key}
-                      onChange={(value) =>
-                        updateConfig("online_asr_config", { ...config.online_asr_config, app_key: value })
+                <Section title="语音识别引擎">
+                  <div className="mb-3 flex flex-wrap gap-2">
+                    <EngineButton
+                      label="豆包 (云端流式)"
+                      active={config.asr.provider === "volcengine"}
+                      onClick={() =>
+                        updateConfig("asr", { ...config.asr, provider: "volcengine" })
                       }
                     />
-                    <Field
-                      label="access_key"
-                      value={config.online_asr_config.access_key}
-                      onChange={(value) =>
-                        updateConfig("online_asr_config", { ...config.online_asr_config, access_key: value })
-                      }
-                    />
-                    <Field
-                      label="resource_id"
-                      value={config.online_asr_config.resource_id}
-                      onChange={(value) =>
-                        updateConfig("online_asr_config", { ...config.online_asr_config, resource_id: value })
+                    <EngineButton
+                      label="SenseVoice (本地离线)"
+                      active={config.asr.provider === "sense_voice_onnx"}
+                      onClick={() =>
+                        updateConfig("asr", { ...config.asr, provider: "sense_voice_onnx" })
                       }
                     />
                   </div>
+
+                  {config.asr.provider === "volcengine" && (
+                    <>
+                      <div className="mb-4 rounded-md bg-neutral-100 px-4 py-3">
+                        <div className="flex items-center gap-2 text-sm">
+                          <span className="font-medium text-neutral-700">豆包</span>
+                          <span className="text-neutral-400">·</span>
+                          <span className="text-neutral-500">火山引擎流式语音识别服务</span>
+                        </div>
+                      </div>
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <Field
+                          label="app_key"
+                          value={config.asr.volcengine.app_key}
+                          onChange={(value) =>
+                            updateConfig("asr", {
+                              ...config.asr,
+                              volcengine: { ...config.asr.volcengine, app_key: value },
+                            })
+                          }
+                        />
+                        <Field
+                          label="access_key"
+                          value={config.asr.volcengine.access_key}
+                          onChange={(value) =>
+                            updateConfig("asr", {
+                              ...config.asr,
+                              volcengine: { ...config.asr.volcengine, access_key: value },
+                            })
+                          }
+                        />
+                        <Field
+                          label="resource_id"
+                          value={config.asr.volcengine.resource_id}
+                          onChange={(value) =>
+                            updateConfig("asr", {
+                              ...config.asr,
+                              volcengine: { ...config.asr.volcengine, resource_id: value },
+                            })
+                          }
+                        />
+                      </div>
+                    </>
+                  )}
+
+                  {config.asr.provider === "sense_voice_onnx" && (
+                    <>
+                      <div className="mb-4 rounded-md bg-neutral-100 px-4 py-3 text-sm text-neutral-500">
+                        SenseVoiceSmall · 多语种本地离线模型，首次使用需下载 ~240 MB
+                      </div>
+                      <div className="grid gap-3">
+                        <Field
+                          label="模型目录"
+                          value={config.asr.sensevoice.model_dir}
+                          placeholder="留空将下载到默认位置"
+                          onChange={(value) =>
+                            updateConfig("asr", {
+                              ...config.asr,
+                              sensevoice: { ...config.asr.sensevoice, model_dir: value },
+                            })
+                          }
+                        />
+                        <div>
+                          <label className="mb-1 block text-xs text-neutral-400">语言</label>
+                          <select
+                            value={config.asr.sensevoice.language || "auto"}
+                            onChange={(event) =>
+                              updateConfig("asr", {
+                                ...config.asr,
+                                sensevoice: {
+                                  ...config.asr.sensevoice,
+                                  language: event.target.value,
+                                },
+                              })
+                            }
+                            className="input-underline w-full py-2 text-sm text-neutral-900"
+                          >
+                            <option value="auto">自动</option>
+                            <option value="zh">中文</option>
+                            <option value="en">English</option>
+                            <option value="ja">日本語</option>
+                            <option value="ko">한국어</option>
+                            <option value="yue">粤语</option>
+                          </select>
+                        </div>
+                        <ToggleRow
+                          title="使用 GPU"
+                          desc="启用 ONNX Runtime GPU provider (需要相应运行时)"
+                          active={config.asr.sensevoice.use_gpu}
+                          onToggle={() =>
+                            updateConfig("asr", {
+                              ...config.asr,
+                              sensevoice: {
+                                ...config.asr.sensevoice,
+                                use_gpu: !config.asr.sensevoice.use_gpu,
+                              },
+                            })
+                          }
+                        />
+                      </div>
+
+                      <div className="mt-4 flex items-center gap-3">
+                        <PrimaryButton
+                          onClick={handleDownloadSenseVoice}
+                          disabled={modelDownload.active}
+                        >
+                          {modelDownload.active ? "下载中…" : "下载模型"}
+                        </PrimaryButton>
+                        {modelDownload.active && (
+                          <span className="truncate text-xs text-neutral-500">
+                            {modelDownload.file || "正在准备…"}
+                          </span>
+                        )}
+                        {!modelDownload.active && modelDownload.error && (
+                          <span className="truncate text-xs text-red-500">
+                            {modelDownload.error}
+                          </span>
+                        )}
+                      </div>
+                      {modelDownload.active && (
+                        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-neutral-200">
+                          <div
+                            className="h-full rounded-full bg-chinese-indigo transition-all"
+                            style={{ width: `${Math.round(modelDownload.progress * 100)}%` }}
+                          />
+                        </div>
+                      )}
+                    </>
+                  )}
                 </Section>
 
                 <Section title="语言模型">
@@ -871,6 +1042,29 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
                         className="input-underline w-20 py-2 text-right text-sm text-neutral-900"
                       />
                     </div>
+
+                    <ToggleRow
+                      title="连续会话模式"
+                      desc="开启后多次语音指令共享上下文，可追问/纠正；关闭则每次都是独立单轮"
+                      active={config.agent_config.continuous_mode ?? false}
+                      onToggle={() =>
+                        updateAgentConfig("continuous_mode", !(config.agent_config.continuous_mode ?? false))
+                      }
+                    />
+
+                    <ToggleRow
+                      title="自动上下文压缩"
+                      desc="对话过长时自动总结早期内容，避免超出模型 context 上限"
+                      active={config.agent_config.compaction?.enabled ?? true}
+                      onToggle={() => {
+                        const cur = config.agent_config.compaction ?? {
+                          enabled: true,
+                          reserve_tokens: 16384,
+                          keep_recent_tokens: 20000,
+                        };
+                        updateAgentConfig("compaction", { ...cur, enabled: !cur.enabled });
+                      }}
+                    />
                   </div>
                 </Section>
                 <Section title="安全规则">
@@ -1168,6 +1362,29 @@ function PrimaryButton({
       className="inline-flex items-center justify-center gap-2 bg-neutral-900 px-3 py-1.5 text-sm font-medium text-neutral-50 transition-opacity hover:opacity-70 disabled:cursor-not-allowed disabled:opacity-40"
     >
       {children}
+    </button>
+  );
+}
+
+function EngineButton({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`px-3 py-1.5 text-sm transition-colors ${
+        active
+          ? "bg-neutral-900 text-neutral-50"
+          : "bg-neutral-100 text-neutral-600 hover:bg-neutral-200"
+      }`}
+    >
+      {label}
     </button>
   );
 }

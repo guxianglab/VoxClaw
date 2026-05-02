@@ -6,6 +6,7 @@ use crate::agent::core::request::*;
 use crate::agent::error::AgentError;
 use crate::agent::provider::{LlmProvider, LlmStream, ProviderCapabilities};
 use crate::http_client::build_client;
+use crate::state::preview_text;
 use crate::storage::ProxyConfig;
 
 pub struct AnthropicProvider {
@@ -30,6 +31,10 @@ impl AnthropicProvider {
             api_key: api_key.to_string(),
             _model: model.to_string(),
         })
+    }
+
+    fn response_preview(text: &str, max_chars: usize) -> String {
+        preview_text(text, max_chars)
     }
 
     /// Convert internal LlmMessages into Anthropic API format.
@@ -144,9 +149,30 @@ impl AnthropicProvider {
                         index: 0,
                         arguments_delta: input.to_string(),
                     });
-                    events.push(LlmStreamEvent::ToolCallEnd { _index: 0 });
+                    events.push(LlmStreamEvent::ToolCallEnd { index: 0 });
                 }
             }
+        }
+
+        if let Some(usage) = body.get("usage") {
+            let input = usage.get("input_tokens").and_then(Value::as_u64).unwrap_or(0);
+            let output = usage.get("output_tokens").and_then(Value::as_u64).unwrap_or(0);
+            let cache_read = usage
+                .get("cache_read_input_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let cache_write = usage
+                .get("cache_creation_input_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            events.push(LlmStreamEvent::Usage(crate::agent::core::usage::Usage {
+                input,
+                output,
+                cache_read,
+                cache_write,
+                total: input + output,
+                ..Default::default()
+            }));
         }
 
         let stop_reason = match body.get("stop_reason").and_then(Value::as_str) {
@@ -208,16 +234,17 @@ impl LlmProvider for AnthropicProvider {
         }
 
         if let Some(thinking) = &request.thinking {
-            if thinking.level != ThinkingLevel::None {
+            if thinking.level.is_active() {
+                let budget = thinking
+                    .budget_tokens
+                    .or_else(|| ThinkingBudgets::default().budget_for(thinking.level))
+                    .unwrap_or(1024);
                 body["thinking"] = json!({
                     "type": "enabled",
-                    "budget_tokens": thinking.budget_tokens.unwrap_or(10000)
+                    "budget_tokens": budget
                 });
             }
         }
-
-        println!("[AGENT] Anthropic request: POST {}, model={}", url, request.model);
-        println!("[AGENT] Anthropic request body: {}", serde_json::to_string(&body).unwrap_or_default());
 
         let response = self
             .client
@@ -233,17 +260,24 @@ impl LlmProvider for AnthropicProvider {
         let status = response.status();
         let response_text = response.text().await.unwrap_or_default();
         println!("[AGENT] Anthropic response status: {}", status);
-        println!("[AGENT] Anthropic response body (first 2000 chars): {}", &response_text[..response_text.len().min(2000)]);
 
         if !status.is_success() {
+            let preview = Self::response_preview(&response_text, 400);
+            eprintln!("[AGENT] Anthropic error response preview: {}", preview);
             return Err(AgentError::Provider(format!(
                 "API error ({}): {}",
-                status, response_text
+                status, preview
             )));
         }
 
         let body: Value = serde_json::from_str(&response_text)
-            .map_err(|e| AgentError::Provider(format!("Parse error: {} | raw response: {}", e, &response_text[..response_text.len().min(500)])))?;
+            .map_err(|e| {
+                AgentError::Provider(format!(
+                    "Parse error: {} | raw response preview: {}",
+                    e,
+                    Self::response_preview(&response_text, 500)
+                ))
+            })?;
 
         let events = self.parse_response(&body);
         Ok(Box::pin(stream::iter(events.into_iter().map(Ok))))
@@ -387,5 +421,10 @@ mod tests {
         assert_eq!(events.len(), 3);
         assert!(matches!(&events[0], LlmStreamEvent::ThinkingDelta(t) if t == "Let me think..."));
         assert!(matches!(&events[1], LlmStreamEvent::TextDelta(t) if t == "Here is my answer."));
+    }
+
+    #[test]
+    fn response_preview_handles_multibyte_text() {
+        assert_eq!(AnthropicProvider::response_preview("检查中文边界", 5), "检查中文边");
     }
 }

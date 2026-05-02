@@ -46,3 +46,17 @@ async-trait = "0.1"
 urlencoding = "2"
 glob-match = "0.2"
 regex = "1"
+
+# SenseVoice (offline ASR) ----------------------------------------------------
+# On Windows, runtime-loading avoids the `ort` static-link MSVC STL mismatch
+# seen with the prebuilt ONNX Runtime archives. We load `onnxruntime.dll`
+# explicitly from an env override, next to the executable, or a local Python
+# install when SenseVoice starts.
+ort = { version = "=2.0.0-rc.11", default-features = false, features = ["std", "ndarray", "load-dynamic"] }
+ndarray = "0.17"
+rubato = "0.15"
+rustfft = "6"
+hound = "3"
+
+[dev-dependencies]
+tempfile = "3"

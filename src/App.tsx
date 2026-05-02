@@ -1,11 +1,15 @@
 import { type ReactNode, useState, useEffect } from "react";
 import { AlertCircle, Sparkles, Wrench, X } from "lucide-react";
 import { HistoryList } from "./components/HistoryList";
+import { MeetingView } from "./components/MeetingView";
+import { SessionBar } from "./components/SessionBar";
 import { SettingsModal } from "./components/SettingsModal";
 import { StatusSection } from "./components/StatusSection";
 import { TitleBar } from "./components/TitleBar";
 import { api, events, VoiceCommandFeedback } from "./lib/api";
 import "./index.css";
+
+type ViewTab = "dictation" | "meeting";
 
 function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -14,6 +18,8 @@ function App() {
   const [llmError, setLlmError] = useState<string | null>(null);
   const [runtimeNotice, setRuntimeNotice] = useState<string | null>(null);
   const [voiceFeedback, setVoiceFeedback] = useState<VoiceCommandFeedback | null>(null);
+  const [view, setView] = useState<ViewTab>("dictation");
+  const [continuousMode, setContinuousMode] = useState(false);
 
   useEffect(() => {
     api.getAsrStatus().then(status => {
@@ -30,6 +36,7 @@ function App() {
       const noDevice = !config.input_device || config.input_device === "";
       const noAsr = !asrStatus.configured;
       const noLlm = !config.llm_config.base_url || !config.llm_config.api_key;
+      setContinuousMode(config.agent_config?.continuous_mode ?? false);
       if (noDevice || noAsr || noLlm) {
         setNeedsSetup(true);
         setIsSettingsOpen(true);
@@ -81,6 +88,7 @@ function App() {
       });
     } else {
       api.getAsrStatus().then(status => setAsrConfigured(status.configured));
+      api.getConfig().then((config) => setContinuousMode(config.agent_config?.continuous_mode ?? false));
       setIsSettingsOpen(false);
     }
   };
@@ -94,6 +102,17 @@ function App() {
             asrConfigured={asrConfigured}
             onSettingsClick={() => setIsSettingsOpen(true)}
           />
+
+          <div className="flex items-center gap-1 border-b border-neutral-200">
+            <TabButton active={view === "dictation"} onClick={() => setView("dictation")}>
+              听写
+            </TabButton>
+            <TabButton active={view === "meeting"} onClick={() => setView("meeting")}>
+              会议
+            </TabButton>
+          </div>
+
+          {view === "dictation" && continuousMode && <SessionBar />}
 
           {(runtimeNotice || llmError || voiceFeedback) && (
             <div className="flex flex-col gap-2">
@@ -135,7 +154,7 @@ function App() {
         </div>
 
         <div className="min-h-0 flex-1">
-          <HistoryList />
+          {view === "dictation" ? <HistoryList /> : <MeetingView />}
         </div>
       </div>
 
@@ -144,6 +163,7 @@ function App() {
   );
 }
 
+export default App;
 function NoticeBar({
   tone,
   icon,
@@ -184,4 +204,24 @@ function NoticeBar({
   );
 }
 
-export default App;
+function TabButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`-mb-px border-b px-3 py-2 text-sm transition-colors ${active
+        ? "border-chinese-indigo text-neutral-900"
+        : "border-transparent text-neutral-500 hover:text-neutral-900"
+        }`}
+    >
+      {children}
+    </button>
+  );
+}

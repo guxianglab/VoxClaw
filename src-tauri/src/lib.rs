@@ -7,6 +7,7 @@ mod http_client;
 mod input_listener;
 pub mod keyboard;
 mod llm;
+mod meeting;
 mod skill_engine;
 mod skills;
 mod state;
@@ -115,7 +116,7 @@ pub fn run() {
             app.manage(safety_shared_state);
 
             // Initialize Services
-            let asr_service = asr::AsrService::new();
+            let asr_service = asr::AsrService::new(asr::build_provider(&config.asr, &config.proxy));
             let mut audio_service = audio::AudioService::new();
 
             // Try to initialize with configured device, fallback to default if it fails
@@ -441,6 +442,7 @@ pub fn run() {
             app.manage(input_listener);
             app.manage(processing_state);
             app.manage(agent_cancel_state);
+            app.manage(commands::init_meeting_state());
 
             Ok(())
         })
@@ -452,6 +454,9 @@ pub fn run() {
             commands::clear_history,
             commands::delete_history_item,
             commands::get_asr_status,
+            commands::get_sensevoice_default_dir,
+            commands::check_sensevoice_model_present,
+            commands::download_sensevoice_model,
             commands::get_input_devices,
             commands::get_current_input_device,
             commands::switch_input_device,
@@ -464,6 +469,18 @@ pub fn run() {
             commands::add_safety_rule,
             commands::set_indicator_window_expanded,
             commands::cancel_agent,
+            commands::session_list,
+            commands::session_load,
+            commands::session_new,
+            commands::session_clear_current,
+            commands::session_current,
+            commands::start_meeting,
+            commands::stop_meeting,
+            commands::get_active_meeting,
+            commands::list_meetings,
+            commands::get_meeting,
+            commands::delete_meeting,
+            commands::polish_meeting,
         ])
         .on_window_event(|window, event| {
             if window.label() == "main" {

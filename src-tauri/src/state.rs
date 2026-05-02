@@ -21,6 +21,7 @@ pub type ProcessingState = Arc<std::sync::atomic::AtomicBool>;
 pub type LlmCancelState = Arc<Mutex<Option<CancellationToken>>>;
 pub type AgentCancelState = Arc<Mutex<Option<CancellationToken>>>;
 pub type SkillExecutionState = Arc<Mutex<Option<SkillExecutionSession>>>;
+pub type MeetingState = Arc<Mutex<Option<crate::meeting::session::ActiveMeeting>>>;
 
 // ---------------------------------------------------------------------------
 // Static sequence counters

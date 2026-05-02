@@ -2,6 +2,7 @@ pub mod core;
 pub mod error;
 pub mod history;
 pub mod provider;
+pub mod session;
 pub mod tool;
 
 pub use core::AgentBuilder;

@@ -8,22 +8,71 @@ use crate::agent::error::AgentError;
 
 // --- Thinking/Reasoning ---
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Copy)]
 #[serde(rename_all = "lowercase")]
 pub enum ThinkingLevel {
+    /// No thinking. Serialized as "none"; "off" is also accepted on input.
     None,
+    Minimal,
     Low,
     Medium,
     High,
+    XHigh,
 }
 
 impl ThinkingLevel {
     pub fn from_str_lossy(s: &str) -> Self {
         match s.to_lowercase().as_str() {
+            "minimal" => ThinkingLevel::Minimal,
             "low" => ThinkingLevel::Low,
             "medium" => ThinkingLevel::Medium,
             "high" => ThinkingLevel::High,
+            "xhigh" | "x-high" | "xhi" => ThinkingLevel::XHigh,
+            "off" | "none" | "" => ThinkingLevel::None,
             _ => ThinkingLevel::None,
+        }
+    }
+
+    /// True for any level above `None`.
+    pub fn is_active(self) -> bool {
+        !matches!(self, ThinkingLevel::None)
+    }
+}
+
+/// Per-level token budgets for providers that take a numeric thinking budget
+/// (Anthropic extended thinking, Gemini thinkingConfig, etc.).
+///
+/// Defaults mirror pi-mono's `DEFAULT_THINKING_BUDGETS`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ThinkingBudgets {
+    pub minimal: u32,
+    pub low: u32,
+    pub medium: u32,
+    pub high: u32,
+    pub xhigh: u32,
+}
+
+impl Default for ThinkingBudgets {
+    fn default() -> Self {
+        Self {
+            minimal: 128,
+            low: 512,
+            medium: 1024,
+            high: 2048,
+            xhigh: 4096,
+        }
+    }
+}
+
+impl ThinkingBudgets {
+    pub fn budget_for(self, level: ThinkingLevel) -> Option<u32> {
+        match level {
+            ThinkingLevel::None => None,
+            ThinkingLevel::Minimal => Some(self.minimal),
+            ThinkingLevel::Low => Some(self.low),
+            ThinkingLevel::Medium => Some(self.medium),
+            ThinkingLevel::High => Some(self.high),
+            ThinkingLevel::XHigh => Some(self.xhigh),
         }
     }
 }
@@ -31,18 +80,27 @@ impl ThinkingLevel {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThinkingConfig {
     pub level: ThinkingLevel,
+    /// Explicit token budget; if `None`, providers fall back to
+    /// `ThinkingBudgets::budget_for(level)`.
     pub budget_tokens: Option<u32>,
 }
 
 // --- Stop Reason ---
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Why an assistant turn ended.
+///
+/// Aligns with pi-mono's `StopReason`. `Cancelled` is serialized as
+/// `"aborted"` and `MaxTokens` as `"length"` to match the JS surface.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
     Stop,
     ToolCalls,
+    #[serde(rename = "length")]
     MaxTokens,
+    #[serde(rename = "aborted")]
     Cancelled,
+    Refusal,
     Error(String),
 }
 
@@ -52,6 +110,7 @@ impl StopReason {
             "stop" => StopReason::Stop,
             "tool_calls" | "function_call" => StopReason::ToolCalls,
             "length" => StopReason::MaxTokens,
+            "content_filter" | "refusal" => StopReason::Refusal,
             other => StopReason::Error(other.to_string()),
         }
     }
@@ -182,8 +241,11 @@ pub enum LlmStreamEvent {
         arguments_delta: String,
     },
     ToolCallEnd {
-        _index: usize,
+        index: usize,
     },
+    /// Token usage and cost reported by the provider for this assistant
+    /// response. Emitted before `Done` when available.
+    Usage(crate::agent::core::usage::Usage),
     Done {
         stop_reason: StopReason,
     },

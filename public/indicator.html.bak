@@ -11,36 +11,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.9/purify.min.js"></script>
 
   <style>
-    /* =========================================================
-       SonicClaw Indicator — flat / square / grayscale
-       Accent: chinese-indigo #1661ab
-       ========================================================= */
-
-    :root {
-      --bg:           rgba(255, 255, 255, 0.94);
-      --bg-strong:    #ffffff;
-      --bg-soft:      #fafafa;            /* neutral-50  */
-      --bg-hover:     #f5f5f5;            /* neutral-100 */
-      --bg-muted:     #e5e5e5;            /* neutral-200 */
-      --border:       #e5e5e5;            /* neutral-200 */
-      --border-soft:  rgba(229, 229, 229, 0.7);
-      --text:         #171717;            /* neutral-900 */
-      --text-2:       #525252;            /* neutral-600 */
-      --text-3:       #737373;            /* neutral-500 */
-      --text-4:       #a3a3a3;            /* neutral-400 */
-      --accent:       #1661ab;            /* chinese-indigo */
-      --accent-soft:  rgba(22, 97, 171, 0.10);
-      --accent-line:  rgba(22, 97, 171, 0.35);
-      --success:      #059669;            /* emerald-600 */
-      --error:        #dc2626;            /* red-600 */
-      --shadow:       0 6px 22px rgba(15, 23, 42, 0.08);
-      --shadow-sm:    0 2px 6px rgba(15, 23, 42, 0.05);
-      --ease:         cubic-bezier(0.2, 0.8, 0.2, 1);
-      --dur:          220ms;
-      --dur-md:       300ms;
-      --dur-lg:       420ms;
-    }
-
+    /* ───── Reset & Base ───── */
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
     html, body {
@@ -49,11 +20,10 @@
       background: transparent;
       overflow: hidden;
       user-select: none;
-      font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans SC",
-                   "Segoe UI Variable", "Segoe UI", -apple-system,
-                   BlinkMacSystemFont, Roboto, sans-serif;
+      /* 优化了字体栈，优先使用系统最原生的无衬线字体，字重更平滑 */
+      font-family: "Segoe UI Variable", "Segoe UI", -apple-system, BlinkMacSystemFont, 
+                   "PingFang SC", "Microsoft YaHei", Roboto, sans-serif;
       -webkit-font-smoothing: antialiased;
-      color: var(--text);
     }
 
     /* ───── Root container ───── */
@@ -64,218 +34,136 @@
       flex-direction: column;
       align-items: center;
       justify-content: flex-end;
-      padding-bottom: 14px;
+      background: transparent;
+      padding-bottom: 12px; /* 增加底部悬浮的安全距离 */
     }
 
-    /* ───── Panel ───── */
+    /* ───── Unified panel (Glassmorphism & Depth) ───── */
     .indicator-panel {
       display: flex;
       flex-direction: column;
-      min-width: 96px;
-      max-width: 600px;
-      background: var(--bg);
-      backdrop-filter: blur(18px) saturate(140%);
-      -webkit-backdrop-filter: blur(18px) saturate(140%);
-      border: 1px solid var(--border);
-      box-shadow: var(--shadow);
+      min-width: 80px;
+      max-width: 560px;
+      border-radius: 20px; /* 稍微收敛圆角，显得更专业 */
+      /* 精致的边框与毛玻璃材质 */
+      border: 1px solid rgba(255, 255, 255, 0.4);
+      background: rgba(248, 250, 252, 0.85);
+      backdrop-filter: blur(24px) saturate(150%);
+      -webkit-backdrop-filter: blur(24px) saturate(150%);
+      /* 多层阴影：底层大阴影负责悬浮感，内层高光负责质感 */
+      box-shadow: 
+        0 12px 32px rgba(0, 0, 0, 0.08),
+        0 2px 8px rgba(0, 0, 0, 0.04),
+        inset 0 1px 0 rgba(255, 255, 255, 0.8);
       overflow: hidden;
       opacity: 0;
-      transform: translateY(8px);
+      transform: translateY(12px) scale(0.95);
+      /* 进场动画：加入轻微弹簧效果 */
       transition:
-        opacity var(--dur) var(--ease),
-        transform var(--dur) var(--ease),
-        min-width var(--dur-md) var(--ease),
-        border-color var(--dur) ease,
-        background var(--dur) ease;
-      /* 直角扁平 — square corners */
+        opacity 0.4s cubic-bezier(0.2, 0.8, 0.2, 1),
+        transform 0.5s cubic-bezier(0.34, 1.56, 0.64, 1),
+        min-width 0.4s cubic-bezier(0.2, 0.8, 0.2, 1),
+        border-color 0.4s ease,
+        background 0.4s ease,
+        box-shadow 0.4s ease;
     }
 
     .indicator-panel.visible {
       opacity: 1;
-      transform: translateY(0);
+      transform: translateY(0) scale(1);
     }
 
     .indicator-panel.fade-out {
-      animation: panelFadeOut var(--dur) var(--ease) forwards;
+      animation: panelFadeOut 0.4s cubic-bezier(0.4, 0, 0.2, 1) forwards;
     }
 
     @keyframes panelFadeOut {
-      0%   { opacity: 1; transform: translateY(0); }
-      100% { opacity: 0; transform: translateY(6px); pointer-events: none; }
+      0%   { opacity: 1; transform: translateY(0) scale(1); }
+      100% { opacity: 0; transform: translateY(8px) scale(0.96); pointer-events: none; }
     }
 
-    /* Agent mode — accent edge on the left */
+    /* ── Intent themes ── */
     .indicator-panel.intent-agent.agent-active {
-      border-color: var(--border);
-      box-shadow:
-        inset 2px 0 0 var(--accent),
-        var(--shadow);
+      background: rgba(248, 250, 252, 0.92);
+      border-color: rgba(99, 102, 241, 0.4);
+      box-shadow: 
+        0 12px 32px rgba(99, 102, 241, 0.12),
+        inset 0 1px 0 rgba(255, 255, 255, 0.9);
     }
 
-    .indicator-panel.result-display {
-      box-shadow:
-        inset 2px 0 0 var(--accent-line),
-        var(--shadow);
-    }
-
-    /* ───── Header strip (agent / result modes only) ───── */
-    .panel-header {
-      display: none;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      padding: 8px 14px;
-      border-bottom: 1px solid var(--border);
-      background: var(--bg-soft);
-      flex-shrink: 0;
-    }
-
-    .indicator-panel.agent-active .panel-header,
-    .indicator-panel.result-display .panel-header {
-      display: flex;
-    }
-
-    .header-label {
-      font-size: 11px;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: var(--text-4);
-      font-weight: 500;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      min-width: 0;
-    }
-
-    .header-label .header-pulse {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: var(--accent);
-      flex-shrink: 0;
-      display: none;
-    }
-
-    .indicator-panel.agent-active .header-label .header-pulse {
-      display: inline-block;
-      animation: headerPulse 1.4s ease-in-out infinite;
-    }
-
-    @keyframes headerPulse {
-      0%, 100% { opacity: 1; }
-      50%      { opacity: 0.25; }
-    }
-
-    .header-actions {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      flex-shrink: 0;
-    }
-
-    .header-btn {
-      display: none;
-      align-items: center;
-      gap: 6px;
-      height: 24px;
-      padding: 0 8px;
-      background: transparent;
-      border: 1px solid transparent;
-      color: var(--text-3);
-      font-size: 12px;
-      font-family: inherit;
-      cursor: pointer;
-      transition: background var(--dur) ease, color var(--dur) ease, border-color var(--dur) ease;
-    }
-
-    .header-btn svg { display: block; }
-
-    .header-btn:hover {
-      background: var(--bg-hover);
-      color: var(--text);
-    }
-
-    .header-btn:active { background: var(--bg-muted); }
-
-    .indicator-panel.agent-active .stop-agent-btn { display: inline-flex; }
-    .stop-agent-btn:hover { color: var(--error); border-color: rgba(220, 38, 38, 0.2); background: rgba(220, 38, 38, 0.06); }
-
-    .indicator-panel.result-display .copy-btn { display: inline-flex; }
-    .copy-btn.copied { color: var(--success); border-color: rgba(5, 150, 105, 0.2); background: rgba(5, 150, 105, 0.06); }
-
-    /* ───── Info feed ───── */
+    /* ───── Info feed (Top Zone) ───── */
     .info-feed {
       max-height: 0;
       opacity: 0;
       overflow: hidden;
       transition:
-        max-height var(--dur-lg) var(--ease),
-        opacity var(--dur) ease,
-        padding var(--dur) ease;
-      padding: 0 14px;
+        max-height 0.45s cubic-bezier(0.2, 0.8, 0.2, 1),
+        opacity 0.3s ease,
+        padding 0.3s ease;
+      padding: 0 16px;
     }
 
     .info-feed.expanded {
-      max-height: 220px;
+      max-height: 180px;
       opacity: 1;
-      padding: 8px 14px;
+      padding: 12px 16px 8px;
       flex-shrink: 0;
     }
 
     .indicator-panel.result-display .info-feed.expanded {
-      max-height: 96px;
-      padding: 8px 14px;
+      max-height: 100px;
+      padding: 12px 16px 8px;
     }
 
-    /* Custom scrollbar */
+    /* 统一的滚动条样式 */
     .custom-scroll {
       overflow-y: auto;
       scrollbar-width: thin;
-      scrollbar-color: rgba(163, 163, 163, 0.5) transparent;
+      scrollbar-color: rgba(148, 163, 184, 0.4) transparent;
     }
     .custom-scroll::-webkit-scrollbar { width: 4px; }
     .custom-scroll::-webkit-scrollbar-track { background: transparent; }
     .custom-scroll::-webkit-scrollbar-thumb {
-      background: rgba(163, 163, 163, 0.5);
+      background: rgba(148, 163, 184, 0.4);
+      border-radius: 4px;
     }
-    .custom-scroll::-webkit-scrollbar-thumb:hover { background: rgba(115, 115, 115, 0.7); }
+    .custom-scroll::-webkit-scrollbar-thumb:hover { background: rgba(100, 116, 139, 0.6); }
 
     .info-feed-scroll {
-      max-height: 200px;
-      padding-right: 4px;
+      max-height: 160px;
+      padding-right: 4px; /* 为滚动条留白 */
     }
     .indicator-panel.result-display .info-feed-scroll {
       max-height: 80px;
     }
 
     @keyframes entrySlideIn {
-      from { opacity: 0; transform: translateY(2px); }
-      to   { opacity: 1; transform: translateY(0); }
+      from { opacity: 0; transform: translateY(4px) scale(0.98); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
     }
 
-    /* Feed entries */
+    /* ── Feed entries ── */
     .feed-entry {
       display: flex;
       align-items: flex-start;
       gap: 10px;
-      padding: 4px 0;
-      font-size: 12px;
-      line-height: 1.55;
-      color: var(--text-3);
-      transition: color var(--dur) ease;
-      animation: entrySlideIn var(--dur) var(--ease);
+      padding: 6px 0;
+      font-size: 13px;
+      line-height: 1.5;
+      color: rgba(30, 41, 59, 0.85);
+      border-bottom: 1px solid transparent;
+      transition: color 0.3s ease, background 0.3s ease;
+      animation: entrySlideIn 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
     }
 
     .feed-icon {
       flex-shrink: 0;
-      width: 14px;
+      width: 16px;
       text-align: center;
-      margin-top: 1px;
-      font-size: 11px;
-      line-height: 1.55;
-      color: var(--text-4);
-      font-family: ui-monospace, SFMono-Regular, Consolas, Menlo, monospace;
-      transition: color var(--dur) ease;
+      margin-top: 2px;
+      font-size: 12px;
+      opacity: 0.6;
+      transition: all 0.3s ease;
     }
 
     .feed-text {
@@ -284,152 +172,128 @@
       text-overflow: ellipsis;
       white-space: nowrap;
       min-width: 0;
-      color: var(--text-2);
     }
 
-    .feed-entry.running           { color: var(--accent); }
-    .feed-entry.running .feed-icon{ color: var(--accent); }
-    .feed-entry.running .feed-text{ color: var(--text); }
+    /* 状态颜色提纯 */
+    .feed-entry.running { color: #4f46e5; }
+    .feed-entry.running .feed-icon { opacity: 1; color: #4f46e5; text-shadow: 0 0 8px rgba(79, 70, 229, 0.3); }
 
-    .feed-entry.success           { color: var(--success); }
-    .feed-entry.success .feed-icon{ color: var(--success); }
-    .feed-entry.success .feed-text{ color: var(--text-2); }
+    .feed-entry.success { color: #059669; }
+    .feed-entry.success .feed-icon { opacity: 1; color: #059669; }
 
-    .feed-entry.error             { color: var(--error); }
-    .feed-entry.error .feed-icon  { color: var(--error); }
-    .feed-entry.error .feed-text  { color: var(--text); }
+    .feed-entry.error { color: #e11d48; }
+    .feed-entry.error .feed-icon { opacity: 1; color: #e11d48; }
 
     .feed-entry.text-output {
-      color: var(--text-2);
-    }
-    .feed-entry.text-output .feed-icon { color: var(--text-4); }
-
-    /* Tool result <details> (built in JS) — styled via class */
-    .feed-details {
-      font-size: 11px;
-      margin-top: 4px;
-      margin-left: 24px;
-      color: var(--text-3);
-    }
-    .feed-details summary {
-      cursor: pointer;
-      user-select: none;
-      outline: none;
-      color: var(--text-4);
-      transition: color var(--dur) ease;
-      list-style: none;
-      padding: 2px 0;
-    }
-    .feed-details summary::-webkit-details-marker { display: none; }
-    .feed-details summary::before {
-      content: "▸ ";
-      display: inline-block;
-      transition: transform var(--dur) ease;
-      font-size: 9px;
-    }
-    .feed-details[open] summary::before {
-      content: "▾ ";
-    }
-    .feed-details summary:hover { color: var(--text-2); }
-    .feed-details pre {
-      background: var(--bg-soft);
-      border: 1px solid var(--border);
-      padding: 8px 10px;
-      margin-top: 4px;
-      max-height: 140px;
-      overflow-y: auto;
-      white-space: pre-wrap;
-      word-break: break-word;
-      font-family: ui-monospace, SFMono-Regular, Consolas, Menlo, monospace;
-      font-size: 11px;
-      line-height: 1.5;
-      color: var(--text-2);
+      color: rgba(71, 85, 105, 0.9);
+      font-style: italic;
     }
 
-    .feed-entry-row {
-      display: flex;
-      gap: 10px;
-      width: 100%;
-      align-items: flex-start;
-    }
-
-    /* ── Inline confirmation ── */
+    /* ── Confirmation UI (Buttons) ── */
     .feed-entry.confirm-entry {
       flex-direction: column;
-      gap: 8px;
-      padding: 10px 12px;
-      margin: 6px 0;
-      background: var(--bg-soft);
-      border: 1px solid var(--border);
-      border-left: 2px solid var(--accent);
+      gap: 10px;
+      color: #334155;
+      background: rgba(241, 245, 249, 0.6);
+      border: 1px solid rgba(226, 232, 240, 0.8);
+      padding: 12px 14px;
+      border-radius: 14px;
+      margin: 8px 0;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.02);
     }
 
     .confirm-entry .confirm-row {
       display: flex;
-      align-items: flex-start;
+      align-items: center;
       gap: 10px;
     }
 
     .confirm-entry .feed-icon {
-      color: var(--accent);
+      color: #6366f1; /* Primary indigo for attention */
+      opacity: 1;
+      font-size: 14px;
     }
 
     .confirm-entry .feed-text {
-      color: var(--text);
+      color: #1e293b;
       font-weight: 500;
-      font-size: 12px;
-      white-space: normal;
+      font-size: 13px;
     }
 
     .confirm-entry .confirm-actions {
       display: flex;
-      gap: 6px;
-      padding-left: 24px;
+      gap: 8px;
+      padding-left: 26px; /* Offset to align with text under icon */
+      margin-top: 4px;
     }
 
     .feed-btn {
-      border: 1px solid var(--border);
-      background: var(--bg-strong);
-      padding: 4px 12px;
+      border: none;
+      border-radius: 8px;
+      padding: 6px 16px;
       font-size: 12px;
-      font-family: inherit;
-      color: var(--text-2);
+      font-weight: 600;
       cursor: pointer;
-      transition: background var(--dur) ease, color var(--dur) ease, border-color var(--dur) ease;
+      transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
     }
-    .feed-btn:hover { background: var(--bg-hover); color: var(--text); }
-    .feed-btn:active { background: var(--bg-muted); }
+
+    .feed-btn:hover {
+      transform: translateY(-1px);
+    }
+
+    .feed-btn:active {
+      transform: translateY(0);
+      filter: brightness(0.9);
+    }
 
     .feed-btn.allow {
-      background: var(--accent);
-      color: #fff;
-      border-color: var(--accent);
+      background: #6366f1;
+      color: white;
+      box-shadow: 0 4px 12px rgba(99, 102, 241, 0.25);
     }
-    .feed-btn.allow:hover { opacity: 0.85; background: var(--accent); color: #fff; }
+    .feed-btn.allow:hover {
+      background: #4f46e5;
+      box-shadow: 0 6px 16px rgba(99, 102, 241, 0.35);
+    }
+
+    .feed-btn.deny {
+      background: #f1f5f9;
+      color: #64748b;
+      border: 1px solid #e2e8f0;
+    }
+    .feed-btn.deny:hover {
+      background: #f8fafc;
+      color: #ef4444;
+      border-color: rgba(239, 68, 68, 0.2);
+    }
 
     .feed-btn.always {
-      background: transparent;
-      color: var(--accent);
-      border-color: var(--accent-line);
+      background: rgba(99, 102, 241, 0.08);
+      color: #6366f1;
+      border: 1px solid rgba(99, 102, 241, 0.2);
     }
-    .feed-btn.always:hover { background: var(--accent-soft); color: var(--accent); }
+    .feed-btn.always:hover {
+      background: rgba(99, 102, 241, 0.12);
+      border-color: rgba(99, 102, 241, 0.4);
+    }
 
-    .feed-btn.deny:hover { color: var(--error); border-color: rgba(220, 38, 38, 0.3); }
+    /* Status updates after confirmation */
+    .confirm-entry.resolved-allow { background: rgba(16, 185, 129, 0.05); border-color: rgba(16, 185, 129, 0.1); }
+    .confirm-entry.resolved-allow .feed-icon { color: #10b981; }
+    .confirm-entry.resolved-allow .feed-text { color: #059669; }
 
-    .confirm-entry.resolved-allow { border-left-color: var(--success); background: rgba(5, 150, 105, 0.04); }
-    .confirm-entry.resolved-allow .feed-icon { color: var(--success); }
-    .confirm-entry.resolved-allow .feed-text { color: var(--success); }
+    .confirm-entry.resolved-deny  { background: rgba(239, 68, 68, 0.05); border-color: rgba(239, 68, 68, 0.1); }
+    .confirm-entry.resolved-deny  .feed-icon { color: #ef4444; }
+    .confirm-entry.resolved-deny  .feed-text { color: #b91c1c; }
 
-    .confirm-entry.resolved-deny  { border-left-color: var(--error); background: rgba(220, 38, 38, 0.04); }
-    .confirm-entry.resolved-deny  .feed-icon { color: var(--error); }
-    .confirm-entry.resolved-deny  .feed-text { color: var(--error); }
-
-    /* ───── Separator ───── */
+    /* ──── Separator (两端渐隐的融合线) ──── */
     .separator {
       height: 1px;
-      background: var(--border);
+      margin: 0;
+      background: linear-gradient(90deg, transparent 0%, rgba(148, 163, 184, 0.3) 20%, rgba(148, 163, 184, 0.3) 80%, transparent 100%);
       opacity: 0;
-      transition: opacity var(--dur) ease;
+      transition: opacity 0.4s ease;
       flex-shrink: 0;
     }
     .separator.visible { opacity: 1; }
@@ -442,136 +306,141 @@
       overflow: hidden;
       flex-shrink: 0;
       transition:
-        max-height var(--dur-lg) var(--ease),
-        padding var(--dur-md) ease,
-        opacity var(--dur-md) ease;
+        max-height 0.45s cubic-bezier(0.2, 0.8, 0.2, 1),
+        padding 0.4s ease,
+        opacity 0.4s ease;
+      position: relative;
     }
 
     .indicator-panel.result-display .result-view {
-      max-height: 340px;
-      padding: 14px 16px 16px;
+      max-height: 400px; /* Provides enough room to expand seamlessly */
+      padding: 0 16px 16px;
       opacity: 1;
     }
 
     .result-scroll {
-      max-height: 300px;
-      padding-right: 6px;
+      max-height: 280px;
+      padding: 12px 8px 0 0;
     }
 
     .result-content {
-      color: var(--text);
-      font-size: 14px;
-      line-height: 1.7;
+      color: #0f172a;
+      font-size: 14px; /* 结果字体稍微放大，增强阅读性 */
+      line-height: 1.6;
       white-space: normal;
       word-break: break-word;
       user-select: text;
     }
 
-    /* Markdown */
-    .result-content p { margin-bottom: 10px; }
-    .result-content p:last-child { margin-bottom: 0; }
-    .result-content strong { font-weight: 600; color: var(--text); }
-    .result-content em { color: var(--text-2); }
-
-    .result-content h1, .result-content h2, .result-content h3, .result-content h4 {
-      font-weight: 600;
-      color: var(--text);
-      margin: 14px 0 8px;
-      line-height: 1.4;
+    .copy-btn {
+      position: absolute;
+      top: 10px;
+      right: 24px;
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.8);
+      border: 1px solid rgba(226, 232, 240, 0.8);
+      color: #64748b;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      visibility: hidden;
+      transition: all 0.2s ease;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+      z-index: 10;
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
     }
-    .result-content h1 { font-size: 18px; }
-    .result-content h2 { font-size: 16px; }
-    .result-content h3, .result-content h4 { font-size: 14px; }
-    .result-content h1:first-child,
-    .result-content h2:first-child,
-    .result-content h3:first-child { margin-top: 0; }
 
+    .indicator-panel.result-display .copy-btn {
+      opacity: 1;
+      visibility: visible;
+      transition-delay: 0.3s;
+    }
+
+    .copy-btn:hover {
+      background: #ffffff;
+      color: #0f172a;
+      border-color: rgba(203, 213, 225, 0.8);
+      box-shadow: 0 3px 6px rgba(0, 0, 0, 0.08);
+      transform: translateY(-1px);
+    }
+
+    .copy-btn:active {
+      transform: translateY(0) scale(0.96);
+    }
+
+    .copy-btn.copied {
+      color: #10b981;
+      background: rgba(16, 185, 129, 0.05);
+      border-color: rgba(16, 185, 129, 0.2);
+    }
+
+    /* ───── Markdown Render Styles ───── */
+    .result-content p { margin-bottom: 8px; }
+    .result-content p:last-child { margin-bottom: 0; }
+    
+    .result-content strong { font-weight: 600; color: #0f172a; }
+    
     .result-content ul, .result-content ol {
-      padding-left: 22px;
-      margin-bottom: 10px;
+      padding-left: 20px;
+      margin-bottom: 8px;
     }
     .result-content li { margin-bottom: 4px; }
-    .result-content li::marker { color: var(--text-4); }
-
-    .result-content a {
-      color: var(--accent);
-      text-decoration: none;
-      border-bottom: 1px solid var(--accent-line);
-      transition: opacity var(--dur) ease;
-    }
-    .result-content a:hover { opacity: 0.7; }
-
+    
+    /* 行内代码 */
     .result-content code:not(.hljs) {
       font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
-      background: var(--bg-soft);
-      border: 1px solid var(--border);
-      padding: 1px 5px;
+      background: rgba(148, 163, 184, 0.15);
+      padding: 2px 4px;
+      border-radius: 4px;
       font-size: 12px;
-      color: var(--text);
+      color: #b91c1c;
     }
-
+    
+    /* 代码块 */
     .result-content pre {
-      background: var(--bg-soft);
-      border: 1px solid var(--border);
-      padding: 10px 12px;
-      margin: 10px 0;
+      background: rgba(241, 245, 249, 0.8);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      border-radius: 8px;
+      padding: 10px;
+      margin: 8px 0;
       overflow-x: auto;
     }
-
+    
     .result-content pre code.hljs {
       background: transparent;
       padding: 0;
       font-size: 12px;
-      line-height: 1.6;
       font-family: ui-monospace, SFMono-Regular, Consolas, Menlo, monospace;
     }
-
+    
+    /* 引用块 */
     .result-content blockquote {
-      border-left: 2px solid var(--border);
-      padding: 2px 12px;
-      color: var(--text-2);
-      margin: 10px 0;
-      background: var(--bg-soft);
+      border-left: 3px solid #94a3b8;
+      padding-left: 10px;
+      color: #475569;
+      margin: 8px 0;
+      background: rgba(241, 245, 249, 0.5);
+      border-radius: 0 4px 4px 0;
     }
 
-    .result-content hr {
-      border: none;
-      border-top: 1px solid var(--border);
-      margin: 14px 0;
-    }
-
-    .result-content table {
-      width: 100%;
-      border-collapse: collapse;
-      margin: 10px 0;
-      font-size: 13px;
-    }
-    .result-content th, .result-content td {
-      border: 1px solid var(--border);
-      padding: 6px 10px;
-      text-align: left;
-    }
-    .result-content th {
-      background: var(--bg-soft);
-      font-weight: 600;
-      color: var(--text);
-    }
-
-    /* ───── Dictation bar ───── */
+    /* ───── Dictation bar (Bottom Zone) ───── */
     .dictation-bar {
       display: flex;
       align-items: center;
       justify-content: center;
       gap: 0;
-      padding: 10px 16px;
-      height: 44px;
-      min-width: 96px;
+      padding: 12px 18px;
+      height: 52px; /* 稍微加高，提供更好的呼吸感 */
+      min-width: 80px;
       overflow: hidden;
       flex-shrink: 0;
-      transition:
-        height var(--dur-md) ease,
-        padding var(--dur-md) ease,
-        opacity var(--dur) ease;
+      border-radius: 0 0 20px 20px;
+      transition: height 0.4s ease, padding 0.4s ease, opacity 0.3s ease;
     }
 
     .indicator-panel.result-display .dictation-bar,
@@ -582,138 +451,154 @@
       opacity: 0;
     }
 
-    /* Audio bars (was rainbow dots) */
-    .audio-bars {
+    /* 语音波动点点 */
+    .dots-wrapper {
       display: flex;
       align-items: center;
       justify-content: center;
-      gap: 3px;
-      height: 22px;
+      gap: 5px;
+      height: 24px;
       flex-shrink: 0;
     }
 
     .dot {
-      width: 3px;
-      height: 12px;
-      background: var(--text-4);
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      transition: transform 0.12s cubic-bezier(0.2, 0.8, 0.2, 1), filter 0.3s ease;
       transform-origin: center;
-      transition: background var(--dur) ease;
-      will-change: transform;
     }
 
-    .indicator-panel.intent-raw .dot,
-    .indicator-panel.intent-polish .dot,
-    .indicator-panel.intent-skill .dot,
-    .indicator-panel.intent-agent .dot {
-      background: var(--accent);
-    }
+    /* 使用更和谐的渐变色系 */
+    .dot-1 { background: #6366f1; }
+    .dot-2 { background: #8b5cf6; }
+    .dot-3 { background: #ec4899; }
+    .dot-4 { background: #06b6d4; }
 
     .dictation-text {
       flex: 0 0 0px;
       overflow-x: hidden;
       white-space: nowrap;
-      -webkit-mask-image: linear-gradient(to right, transparent 0%, black 14px, black calc(100% - 14px), transparent 100%);
-      mask-image: linear-gradient(to right, transparent 0%, black 14px, black calc(100% - 14px), transparent 100%);
+      -webkit-mask-image: linear-gradient(to right, transparent 0%, black 16px, black calc(100% - 16px), transparent 100%);
+      mask-image: linear-gradient(to right, transparent 0%, black 16px, black calc(100% - 16px), transparent 100%);
       opacity: 0;
-      max-width: 500px;
+      max-width: 480px;
       transition:
-        opacity var(--dur) ease,
-        flex var(--dur-md) var(--ease),
-        margin-left var(--dur) ease;
+        opacity 0.4s ease,
+        flex 0.5s cubic-bezier(0.2, 0.8, 0.2, 1),
+        margin-left 0.4s ease;
       margin-left: 0;
     }
 
     .dictation-text.has-text {
       opacity: 1;
       flex: 1 1 0%;
-      margin-left: 14px;
+      margin-left: 16px;
     }
 
     .dictation-content {
-      color: var(--text);
-      font-size: 13px;
+      color: #0f172a;
+      font-size: 14px;
       font-weight: 500;
       display: inline-block;
       padding-right: 8px;
-      letter-spacing: 0.01em;
     }
 
-    /* Agent spinner — replaces audio bars during agent processing */
+    /* ───── Agent Spinner ───── */
     @keyframes spin { 100% { transform: rotate(360deg); } }
 
     .agent-spinner {
-      width: 16px;
-      height: 16px;
-      border: 1.5px solid var(--bg-muted);
-      border-top-color: var(--accent);
+      width: 18px;
+      height: 18px;
+      border: 2px solid rgba(99, 102, 241, 0.15);
+      border-top-color: #6366f1;
       border-radius: 50%;
-      animation: spin 0.7s linear infinite;
+      animation: spin 0.8s cubic-bezier(0.4, 0, 0.2, 1) infinite; /* 使用非线性旋转，更有灵性 */
       flex-shrink: 0;
       display: none;
     }
 
     .indicator-panel.intent-agent.agent-active .agent-spinner { display: block; }
-    .indicator-panel.intent-agent.agent-active .audio-bars { display: none; }
+    .indicator-panel.intent-agent.agent-active .dots-wrapper { display: none; }
+
+    .stop-agent-btn {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      background: rgba(239, 68, 68, 0.1);
+      border: 1px solid rgba(239, 68, 68, 0.2);
+      color: #ef4444;
+      cursor: pointer;
+      margin-right: 12px;
+      transition: all 0.2s ease;
+      flex-shrink: 0;
+      z-index: 10;
+    }
+
+    .stop-agent-btn:hover {
+      background: rgba(239, 68, 68, 0.2);
+      transform: scale(1.05);
+    }
+
+    .stop-agent-btn:active {
+      transform: scale(0.95);
+    }
+
+    .indicator-panel.intent-agent.agent-active .stop-agent-btn {
+      display: flex;
+    }
 
     /* ───── Dismiss bar ───── */
     .dismiss-bar {
       display: flex;
       align-items: center;
       justify-content: center;
-      gap: 10px;
+      gap: 8px;
       height: 0;
       overflow: hidden;
       opacity: 0;
-      font-size: 11px;
-      letter-spacing: 0.06em;
-      color: var(--text-4);
+      font-size: 12px;
+      font-weight: 500;
+      color: rgba(100, 116, 139, 0.7);
       cursor: pointer;
-      background: var(--bg-soft);
-      transition:
-        height var(--dur) ease,
-        opacity var(--dur) ease,
-        background var(--dur) ease,
-        color var(--dur) ease;
+      background: rgba(241, 245, 249, 0.5);
+      transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
       user-select: none;
       flex-shrink: 0;
     }
 
     .dismiss-bar.visible {
-      height: 30px;
+      height: 36px;
       opacity: 1;
-      border-top: 1px solid var(--border);
+      border-top: 1px solid rgba(148, 163, 184, 0.15);
     }
 
     .dismiss-bar:hover {
-      background: var(--bg-hover);
-      color: var(--text);
-    }
-
-    .dismiss-sep {
-      color: var(--text-4);
-      opacity: 0.5;
+      background: rgba(226, 232, 240, 0.8);
+      color: #0f172a;
     }
 
     .indicator-panel.result-display { cursor: default; }
     .indicator-panel.result-display .feed-entry.text-output { display: none; }
 
-    /* ───── Error toast ───── */
+    /* ───── Error Toast ───── */
     .error-toast {
       position: fixed;
       bottom: 16px;
       left: 50%;
-      transform: translateX(-50%) translateY(8px);
-      background: var(--text);
-      color: var(--bg-strong);
-      padding: 8px 14px;
-      font-size: 12px;
-      box-shadow: var(--shadow);
+      transform: translateX(-50%) translateY(20px);
+      background: rgba(15, 23, 42, 0.9);
+      color: white;
+      padding: 8px 16px;
+      border-radius: 12px;
+      font-size: 13px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
       opacity: 0;
       visibility: hidden;
-      transition:
-        opacity var(--dur) ease,
-        transform var(--dur) var(--ease),
-        visibility var(--dur) ease;
+      transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
     }
 
     .error-toast.visible {
@@ -731,66 +616,47 @@
 <body>
   <div id="app">
     <div class="indicator-panel" id="panel">
-
-      <!-- Header strip: visible only in agent / result modes -->
-      <div class="panel-header" id="panelHeader">
-        <span class="header-label">
-          <span class="header-pulse"></span>
-          <span id="headerLabel">AI</span>
-        </span>
-        <div class="header-actions">
-          <button class="header-btn stop-agent-btn" id="stopAgentBtn" title="停止">
-            <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
-              <rect x="5" y="5" width="14" height="14"></rect>
-            </svg>
-            <span>停止</span>
-          </button>
-          <button class="header-btn copy-btn" id="copyBtn" title="复制">
-            <svg id="copyIcon" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="9" y="9" width="13" height="13"></rect>
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-            </svg>
-            <svg id="checkIcon" style="display:none;" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="20 6 9 17 4 12"></polyline>
-            </svg>
-            <span class="copy-label">复制</span>
-          </button>
-        </div>
-      </div>
-
-      <!-- Tool execution / status feed -->
       <div class="info-feed" id="infoFeed">
         <div class="info-feed-scroll custom-scroll" id="infoFeedScroll"></div>
       </div>
 
       <div class="separator" id="separator"></div>
 
-      <!-- Markdown result -->
       <div class="result-view" id="resultView">
         <div class="result-scroll custom-scroll" id="resultScroll">
           <div class="result-content" id="resultContent"></div>
         </div>
+        <div class="copy-btn" id="copyBtn" title="一键复制">
+          <svg id="copyIcon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+          </svg>
+          <svg id="checkIcon" style="display:none;" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="20 6 9 17 4 12"></polyline>
+          </svg>
+        </div>
       </div>
 
-      <!-- Dictation bar (audio bars + live ASR text) -->
       <div class="dictation-bar" id="dictationBar">
+        <button class="stop-agent-btn" id="stopAgentBtn" title="停止助手">
+          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+            <rect x="4" y="4" width="16" height="16" rx="2"></rect>
+          </svg>
+        </button>
         <div class="agent-spinner" id="agentSpinner"></div>
-        <div class="audio-bars" id="dots">
-          <span class="dot dot-1"></span>
-          <span class="dot dot-2"></span>
-          <span class="dot dot-3"></span>
-          <span class="dot dot-4"></span>
+        <div class="dots-wrapper" id="dots">
+          <div class="dot dot-1"></div>
+          <div class="dot dot-2"></div>
+          <div class="dot dot-3"></div>
+          <div class="dot dot-4"></div>
         </div>
         <div class="dictation-text" id="dictationText">
           <span class="dictation-content" id="dictationContent"></span>
         </div>
       </div>
 
-      <!-- Dismiss bar (result mode only) -->
       <div class="dismiss-bar" id="dismissBar">
-        <span>点击关闭</span>
-        <span class="dismiss-sep">·</span>
-        <span>Esc</span>
+        <span>✓ 点击关闭</span><span style="opacity:0.3">|</span><span>Esc</span>
       </div>
     </div>
   </div>
@@ -798,9 +664,7 @@
   <div class="error-toast" id="errorToast"></div>
 
   <script>
-    // ─────────────────────────────────────────────
-    // Marked / hljs init
-    // ─────────────────────────────────────────────
+    // --- 在 script 开头初始化 Marked 配置 ---
     marked.setOptions({
       highlight: function(code, lang) {
         if (lang && hljs.getLanguage(lang)) {
@@ -808,63 +672,55 @@
             return hljs.highlight(code, { language: lang }).value;
           } catch (__) {}
         }
-        return code;
+        return code; // 兜底返回原代码
       },
-      breaks: true,
-      gfm: true
+      breaks: true, // 支持 GitHub 风格的换行
+      gfm: true     // 开启 GitHub 风格的 Markdown
     });
 
     // ─────────────────────────────────────────────
     // Element refs
     // ─────────────────────────────────────────────
-    const panel            = document.getElementById('panel');
-    const panelHeader      = document.getElementById('panelHeader');
-    const headerLabel      = document.getElementById('headerLabel');
-    const infoFeed         = document.getElementById('infoFeed');
-    const infoFeedScroll   = document.getElementById('infoFeedScroll');
-    const separator        = document.getElementById('separator');
-    const resultView       = document.getElementById('resultView');
-    const resultScroll     = document.getElementById('resultScroll');
-    const resultContent    = document.getElementById('resultContent');
-    const copyBtn          = document.getElementById('copyBtn');
-    const copyIcon         = document.getElementById('copyIcon');
-    const checkIcon        = document.getElementById('checkIcon');
-    const stopAgentBtn     = document.getElementById('stopAgentBtn');
-    const dictationText    = document.getElementById('dictationText');
+    const panel           = document.getElementById('panel');
+    const infoFeed        = document.getElementById('infoFeed');
+    const infoFeedScroll  = document.getElementById('infoFeedScroll');
+    const separator       = document.getElementById('separator');
+    const resultView      = document.getElementById('resultView');
+    const resultScroll    = document.getElementById('resultScroll');
+    const resultContent   = document.getElementById('resultContent');
+    const copyBtn         = document.getElementById('copyBtn');
+    const copyIcon        = document.getElementById('copyIcon');
+    const checkIcon       = document.getElementById('checkIcon');
+    const stopAgentBtn    = document.getElementById('stopAgentBtn');
+    const dictationText   = document.getElementById('dictationText');
     const dictationContent = document.getElementById('dictationContent');
-    const dots             = Array.from(document.querySelectorAll('.dot'));
-    const agentSpinner     = document.getElementById('agentSpinner');
-    const errorToast       = document.getElementById('errorToast');
-    const dismissBar       = document.getElementById('dismissBar');
+    const dots            = Array.from(document.querySelectorAll('.dot'));
+    const agentSpinner    = document.getElementById('agentSpinner');
+    const errorToast      = document.getElementById('errorToast');
+    const dismissBar      = document.getElementById('dismissBar');
 
     // ─────────────────────────────────────────────
     // State
     // ─────────────────────────────────────────────
-    let isRecording        = false;
-    let isProcessing       = false;
-    let isLlmProcessing    = false;
-    let isAgentProcessing  = false;
-    let isFadingOut        = false;
-    let isResultDisplay    = false;
-    let agentFinalText     = '';
-    let resultDismissTimer = null;
-    let streamText         = '';
-    let dictationIntent    = 'none';
-    let targetLevel        = 0;
-    let smoothedLevel      = 0;
+    let isRecording       = false;
+    let isProcessing      = false;   // ASR recognition
+    let isLlmProcessing   = false;   // LLM polish
+    let isAgentProcessing = false;
+    let isFadingOut       = false;
+    let isResultDisplay   = false;   // Agent result display mode (stays open)
+    let agentFinalText    = '';      // Accumulated agent text output
+    let resultDismissTimer = null;   // Auto-dismiss timeout for result display
+    let streamText        = '';
+    let dictationIntent   = 'none';
+    let targetLevel       = 0;
+    let smoothedLevel     = 0;
 
+    // pending confirmation map: id → { entryEl, timeoutId }
     const pendingConfirms = new Map();
 
+    // Tauri APIs (set after init)
     let tauriEvent  = null;
     let tauriWindow = null;
-
-    // Intent label map (CN, lowercase context)
-    const INTENT_LABEL = {
-      raw:    '听写',
-      polish: 'AI 润色',
-      skill:  '技能',
-      agent:  'AI 助手'
-    };
 
     // ─────────────────────────────────────────────
     // Utilities
@@ -888,8 +744,9 @@
         if (expanded) {
           await window.__TAURI__.core.invoke('set_indicator_window_expanded', { expanded: true });
         } else {
+          // Add a delay to let the CSS layout transition finish before shrinking the OS window bounds
           windowExpandTimer = setTimeout(async () => {
-            try { await window.__TAURI__.core.invoke('set_indicator_window_expanded', { expanded: false }); }
+            try { await window.__TAURI__.core.invoke('set_indicator_window_expanded', { expanded: false }); } 
             catch (e) { console.error(e); }
           }, 450);
         }
@@ -898,15 +755,12 @@
       }
     }
 
-    function setHeaderLabel(text) {
-      if (headerLabel) headerLabel.textContent = text;
-    }
-
     // ─────────────────────────────────────────────
-    // Panel visibility
+    // Panel visibility helpers
     // ─────────────────────────────────────────────
     function showPanel() {
       if (isFadingOut) {
+        // Cancel ongoing fade-out
         panel.classList.remove('fade-out');
         isFadingOut = false;
       }
@@ -915,24 +769,29 @@
 
     function startFadeOut() {
       if (isFadingOut) return;
+      // Don't fade out in result-display mode unless explicitly dismissed
       if (isResultDisplay) return;
       isFadingOut = true;
       panel.classList.add('fade-out');
       setTimeout(() => {
         if (!tauriWindow) { resetState(); return; }
         tauriWindow.getCurrentWindow().hide().then(() => {
+          // Delay resetting state slightly so OS can fully compose the hidden window
           setTimeout(resetState, 20);
         }).catch(e => {
           console.error('[Indicator] hide failed:', e);
           resetState();
         });
-      }, 240);
+      }, 460);
     }
 
     function dismissResult() {
       if (!isResultDisplay) return;
       if (resultDismissTimer) { clearTimeout(resultDismissTimer); resultDismissTimer = null; }
       isResultDisplay = false;
+      // Do not strip the UI classes or resize the window yet,
+      // otherwise it collapses instantly before the fade-out is complete (causing a visual flash).
+      // Let startFadeOut finish the CSS opacity transition first.
       isFadingOut = false;
       startFadeOut();
     }
@@ -940,18 +799,17 @@
     function enterResultDisplay() {
       isResultDisplay = true;
       panel.classList.add('result-display');
-      panel.classList.remove('agent-active');
-      setHeaderLabel('AI · 已生成');
       dismissBar.classList.add('visible');
       syncIndicatorWindowSize(true);
-
+      
       if (agentFinalText) {
         resultContent.innerHTML = DOMPurify.sanitize(marked.parse(agentFinalText));
       } else {
         resultContent.innerHTML = '';
       }
-
+      
       resultScroll.scrollTop = 0;
+      // Auto-dismiss after 30s as a fallback (non-agent modes only)
       if (resultDismissTimer) clearTimeout(resultDismissTimer);
       if (dictationIntent !== 'agent') {
         resultDismissTimer = setTimeout(() => dismissResult(), 30000);
@@ -989,7 +847,6 @@
       dictationIntent = 'none';
       targetLevel = smoothedLevel = 0;
       pendingConfirms.clear();
-      setHeaderLabel('AI');
     }
 
     // ─────────────────────────────────────────────
@@ -1002,6 +859,11 @@
       }
     }
 
+    /**
+     * Called when a new recording/dictation session starts.
+     * Clears any leftover result-display state from a previous agent session,
+     * so the new session's UI is always clean.
+     */
     function cleanupPreviousSession() {
       panel.classList.remove('dictation-hidden');
       if (!isResultDisplay) return;
@@ -1015,8 +877,8 @@
       infoFeedScroll.innerHTML = '';
       collapseFeed();
       syncIndicatorWindowSize(false);
+      // Allow fade-out if triggered
       isFadingOut = false;
-      setHeaderLabel('AI');
     }
 
     // ─────────────────────────────────────────────
@@ -1027,16 +889,19 @@
       if (streamText) {
         dictationContent.textContent = streamText;
         dictationText.classList.add('has-text');
+        // Auto-scroll the scroller to end
         setTimeout(() => {
           dictationText.scrollLeft = dictationText.scrollWidth;
         }, 50);
       } else {
         dictationText.classList.remove('has-text');
-        setTimeout(() => { dictationContent.textContent = ''; }, 320);
+        setTimeout(() => { dictationContent.textContent = ''; }, 420);
       }
     }
 
-    function clearDictationText() { updateDictationText(''); }
+    function clearDictationText() {
+      updateDictationText('');
+    }
 
     // ─────────────────────────────────────────────
     // Info feed
@@ -1055,6 +920,9 @@
       infoFeedScroll.scrollTop = infoFeedScroll.scrollHeight;
     }
 
+    /**
+     * Create a standard feed entry: ▸ text [status]
+     */
     function createFeedEntry(icon, text, cls) {
       const div = document.createElement('div');
       div.className = 'feed-entry' + (cls ? ' ' + cls : '');
@@ -1079,6 +947,9 @@
       return el;
     }
 
+    /**
+     * Build a human-readable summary for a tool call.
+     */
     function formatToolSummary(name, args) {
       if (!args || typeof args !== 'object') return name;
       const a = args;
@@ -1099,6 +970,7 @@
       }
     }
 
+    // Map: callId → entry element
     const toolEntryMap = new Map();
 
     function handleAgentEvent(data) {
@@ -1108,34 +980,59 @@
         let args = null;
         try { args = JSON.parse(data.args || '{}'); } catch (_) {}
         const summary = formatToolSummary(data.tool_name, args);
-        const label = data.tool_name + (summary ? '  ' + summary : '');
-        const el = appendFeedEntry('•', label, 'running');
+        const label = data.tool_name + (summary ? ': ' + summary : '');
+        const el = appendFeedEntry('▸', label, 'running');
         if (data.call_id) toolEntryMap.set(data.call_id, el);
 
       } else if (data.type === 'tool_execution_end') {
         const el = data.call_id ? toolEntryMap.get(data.call_id) : null;
         const ok = !(data.result && data.result.is_error);
+        
         const resultString = (data.result && data.result.output) || '';
-
         if (el) {
           if (resultString.trim().length > 0) {
             const details = document.createElement('details');
-            details.className = 'feed-details';
-
+            details.style.fontSize = '11px';
+            details.style.marginTop = '6px';
+            details.style.marginLeft = '26px'; // Align under text
+            details.style.color = '#64748b';
+            
             const summary = document.createElement('summary');
-            summary.textContent = ok ? '查看输出' : '查看错误';
-
+            summary.textContent = ok ? '查看调用结果' : '查看错误日志';
+            summary.style.cursor = 'pointer';
+            summary.style.userSelect = 'none';
+            summary.style.outline = 'none';
+            summary.style.opacity = '0.8';
+            summary.style.transition = 'opacity 0.2s';
+            summary.onmouseenter = () => summary.style.opacity = '1';
+            summary.onmouseleave = () => summary.style.opacity = '0.8';
+            
             const pre = document.createElement('pre');
+            pre.style.background = 'rgba(241, 245, 249, 0.8)';
+            pre.style.padding = '8px';
+            pre.style.borderRadius = '6px';
+            pre.style.marginTop = '4px';
+            pre.style.maxHeight = '120px';
+            pre.style.overflowY = 'auto';
+            pre.style.whiteSpace = 'pre-wrap';
+            pre.style.wordBreak = 'break-word';
             pre.className = 'custom-scroll';
-            pre.textContent = truncate(resultString, 5000);
-
+            pre.textContent = truncate(resultString, 5000); // cap size
+            
             details.appendChild(summary);
             details.appendChild(pre);
-
+            
+            // Re-structure to wrap content correctly
             const firstRow = document.createElement('div');
-            firstRow.className = 'feed-entry-row';
-            while (el.firstChild) firstRow.appendChild(el.firstChild);
-
+            firstRow.style.display = 'flex';
+            firstRow.style.gap = '10px';
+            firstRow.style.width = '100%';
+            
+            // Move icon and text into firstRow
+            while (el.firstChild) {
+                firstRow.appendChild(el.firstChild);
+            }
+            
             el.style.flexDirection = 'column';
             el.style.alignItems = 'stretch';
             el.appendChild(firstRow);
@@ -1151,34 +1048,42 @@
         scrollFeedToBottom();
 
       } else if (data.type === 'message_update') {
+        // Only show non-empty meaningful text deltas in feed
         if (data.content && data.content.kind === 'text_delta' && data.content.text) {
+          // Accumulate full text
           agentFinalText += data.content.text;
+          // Accumulate into the last text-output entry if it exists
           const last = infoFeedScroll.lastElementChild;
           if (last && last.classList.contains('text-output')) {
             const t = last.querySelector('.feed-text');
             if (t) t.textContent = truncate(agentFinalText, 200);
           } else {
-            appendFeedEntry('»', truncate(data.content.text, 200), 'text-output');
+            appendFeedEntry('↩', truncate(data.content.text, 200), 'text-output');
           }
           scrollFeedToBottom();
         }
 
       } else if (data.type === 'agent_end') {
+        // Replace accumulated text-output entry with the full final text
         const fullText = (data.result && data.result.text) ? data.result.text.trim() : agentFinalText.trim();
         if (fullText) {
           agentFinalText = fullText;
+          
           resultContent.innerHTML = DOMPurify.sanitize(marked.parse(fullText));
-
+          
+          // Find and update the text-output entry with the complete text
           const textEntry = infoFeedScroll.querySelector('.feed-entry.text-output:last-of-type');
           if (textEntry) {
             const t = textEntry.querySelector('.feed-text');
             if (t) {
+              // Keep a short summary in the feed; the full content is shown in the result view.
               t.textContent = fullText.length > 120 ? fullText.substring(0, 120) + '…' : fullText;
               t.style.whiteSpace = 'pre-wrap';
               t.style.overflow = 'visible';
             }
           } else if (!infoFeedScroll.querySelector('.feed-entry.text-output')) {
-            appendFeedEntry('»', fullText.length > 120 ? fullText.substring(0, 120) + '…' : fullText, 'text-output');
+            // Create the entry if it wasn't streamed
+            appendFeedEntry('↩', fullText.length > 120 ? fullText.substring(0, 120) + '…' : fullText, 'text-output');
           }
           scrollFeedToBottom();
         }
@@ -1190,12 +1095,13 @@
     }
 
     // ─────────────────────────────────────────────
-    // Confirmation
+    // Confirmation (inline in feed)
     // ─────────────────────────────────────────────
     function handleConfirmationRequest(data) {
       if (!data || !data.id) return;
       console.log('[Indicator] Confirmation request:', data.tool, data.summary);
 
+      // Build inline confirmation entry
       const div = document.createElement('div');
       div.className = 'feed-entry confirm-entry';
 
@@ -1204,11 +1110,11 @@
 
       const icon = document.createElement('span');
       icon.className = 'feed-icon';
-      icon.textContent = '!';
+      icon.textContent = '⚠';
 
       const text = document.createElement('span');
       text.className = 'feed-text';
-      text.textContent = '需要确认 · ' + (data.tool || '') + (data.summary ? '  ' + truncate(data.summary, 80) : '');
+      text.textContent = (data.tool || '') + (data.summary ? ': ' + truncate(data.summary, 60) : '');
 
       row.appendChild(icon);
       row.appendChild(text);
@@ -1216,9 +1122,9 @@
       const actions = document.createElement('div');
       actions.className = 'confirm-actions';
 
-      const denyBtn   = makeConfirmBtn('拒绝',     'deny',   data.id, 'deny');
+      const denyBtn   = makeConfirmBtn('拒绝',    'deny',   data.id, 'deny');
       const alwaysBtn = makeConfirmBtn('始终允许', 'always', data.id, 'always');
-      const allowBtn  = makeConfirmBtn('允许',     'allow',  data.id, 'allow');
+      const allowBtn  = makeConfirmBtn('允许',    'allow',  data.id, 'allow');
 
       actions.appendChild(denyBtn);
       actions.appendChild(alwaysBtn);
@@ -1230,6 +1136,7 @@
       scrollFeedToBottom();
       expandFeed();
 
+      // Auto-deny timeout
       const timeoutMs = data.timeout_ms || 30000;
       const timerId = setTimeout(() => {
         console.log('[Indicator] Confirmation timeout, auto-denying', data.id);
@@ -1253,15 +1160,18 @@
       clearTimeout(entry.timerId);
       pendingConfirms.delete(id);
 
+      // Update entry visually
       if (entry.el) {
         const actions = entry.el.querySelector('.confirm-actions');
         if (actions) actions.remove();
-
+        
         const isAllow = (decision !== 'deny');
         entry.el.classList.add(isAllow ? 'resolved-allow' : 'resolved-deny');
 
         const icon = entry.el.querySelector('.feed-icon');
-        if (icon) icon.textContent = isAllow ? '✓' : '✗';
+        if (icon) {
+          icon.textContent = isAllow ? '✓' : '✗';
+        }
       }
 
       if (!window.__TAURI__) return;
@@ -1271,9 +1181,8 @@
         const tool = entry.el
           ? (entry.el.querySelector('.feed-text') || {}).textContent || ''
           : '';
-        // text format: "需要确认 · {tool}  {summary}"
-        const m = tool.match(/·\s*([^\s]+)/);
-        const toolName = (m && m[1]) ? m[1] : '*';
+        // Extract tool name (before ':')
+        const toolName = tool.split(':')[0].trim() || '*';
         const rule = { tool: toolName, action: 'allow', commandPattern: null, pathScope: null };
         core.invoke('add_safety_rule', { rule }).catch(e =>
           console.error('[Indicator] add_safety_rule failed:', e)
@@ -1285,7 +1194,7 @@
     }
 
     // ─────────────────────────────────────────────
-    // Audio bar animation loop
+    // Dot animation loop
     // ─────────────────────────────────────────────
     function isThinking() {
       return !isRecording && (isProcessing || isLlmProcessing) && !isAgentProcessing;
@@ -1295,27 +1204,26 @@
       const t = Date.now();
 
       if (isThinking()) {
-        // Gentle wave — bars pulse in sequence
         dots.forEach((d, i) => {
-          const phase = t / 280 + i * 0.7;
-          const sy    = 0.6 + (Math.sin(phase) + 1) * 0.5;   // 0.6 → 1.6
-          const ty    = Math.sin(phase) * 1.2;
-          d.style.transform = `translateY(${ty}px) scaleY(${sy})`;
-          d.style.opacity   = '0.85';
+          const scale = Math.max(0.4, 0.65 + Math.sin(t / 290 + i * 0.85) * 0.55);
+          const y = Math.sin(t / 145 + i) * 2.5;
+          d.style.transform = `scale(${scale}) translateY(${y}px)`;
+          d.style.filter    = 'brightness(1.5) drop-shadow(0 0 3px rgba(161,161,170,0.5))';
         });
       } else if (isRecording || smoothedLevel > 0.01) {
         smoothedLevel += (targetLevel - smoothedLevel) * 0.25;
         dots.forEach((d, i) => {
-          const idle  = 0.55 + Math.sin(t / 200 + i * 1.1) * 0.15;
-          const voice = 1 + smoothedLevel * (1.6 + (i % 2) * 0.4);
-          const sy    = Math.min(2.6, idle * voice);
-          d.style.transform = `scaleY(${sy})`;
-          d.style.opacity   = '1';
+          const base      = 0.75 + Math.sin(t / 145 + i * 1.4) * 0.18;
+          const voice     = 1 + smoothedLevel * (1.4 + (i % 2) * 0.4);
+          const scale     = Math.min(3.2, base * voice);
+          const y         = -smoothedLevel * 3.5;
+          d.style.transform = `scale(${scale}) translateY(${y}px)`;
+          d.style.filter    = 'none';
         });
       } else {
         dots.forEach(d => {
-          d.style.transform = 'scaleY(0.55)';
-          d.style.opacity   = '0.6';
+          d.style.transform = 'scale(0.75) translateY(0)';
+          d.style.filter    = 'none';
         });
       }
 
@@ -1327,23 +1235,28 @@
     // ─────────────────────────────────────────────
     function setupEventListeners(event) {
 
+      // ── Dictation intent → panel theme ──
       event.listen('dictation_intent', (e) => {
         dictationIntent = e.payload || 'none';
         applyIntent(dictationIntent);
         if (dictationIntent !== 'none') {
+          // Clear any leftover state from a previous session
           cleanupPreviousSession();
           showPanel();
         }
       });
 
+      // ── Audio level ──
       event.listen('audio_level', (e) => {
         const raw = Math.min((e.payload || 0) * 8, 1.0);
         targetLevel = Math.sqrt(raw);
       });
 
+      // ── Recording status ──
       event.listen('recording_status', (e) => {
         isRecording = !!e.payload;
         if (isRecording) {
+          // Clear any leftover result-display state from a previous agent session
           cleanupPreviousSession();
           showPanel();
           applyIntent(dictationIntent);
@@ -1355,16 +1268,20 @@
         }
       });
 
+      // ── Stream update (dictation text) ──
+      // NOTE: No isAgentProcessing guard — dictation is always shown.
       event.listen('stream_update', (e) => {
         updateDictationText(e.payload || '');
         showPanel();
       });
 
+      // ── ASR recognition processing ──
       event.listen('recognition_processing', (e) => {
         isProcessing = !!e.payload;
         if (isProcessing) {
           showPanel();
         } else {
+          // Do not clear dictation text here; let it smoothly fade out with the panel
           if (!isLlmProcessing && !isAgentProcessing) {
             setTimeout(() => {
               if (canFadeOut() && !isFadingOut) startFadeOut();
@@ -1373,69 +1290,102 @@
         }
       });
 
+      // ── LLM processing (polish) ──
       event.listen('llm_processing', (e) => {
         isLlmProcessing = !!e.payload;
-        if (isLlmProcessing) showPanel();
+        if (isLlmProcessing) {
+          showPanel();
+        }
       });
 
+      // ── Session complete (dictation / polish / skill done) ──
       event.listen('session_complete', () => {
-        if (dictationIntent === 'agent') return;
+        console.log('[Indicator] session_complete');
+        // Agent mode has its own shutdown flow in `agent_processing`.
+        // If we fade out here, the final summary can flash and disappear.
+        if (dictationIntent === 'agent') {
+          return;
+        }
+        // Only fade out if agent is not still active and not in agent result display
         if (!isAgentProcessing && !isFadingOut && !(isResultDisplay && dictationIntent === 'agent')) {
+          // Do not clearDictationText() here to prevent the capsule from abruptly shrinking.
+          // Let startFadeOut handle the visual disappearance, and resetState will clean it up internally.
           startFadeOut();
         }
       });
 
-      event.listen('transcription_update', () => { /* no-op */ });
+      // ── Transcription finalized ──
+      event.listen('transcription_update', () => {
+        // The raw text has been committed. We intentionally keep it in the dictation bar
+        // so that if LLM processing begins, the user sees the text the LLM is "pondering" over,
+        // rather than the capsule abruptly shrinking and clearing the text.
+      });
 
-      let closeTimerId = null;
+    // State to track if we're waiting for fade out
+    let closeTimerId = null;
 
-      event.listen('agent_processing', (e) => {
-        const active = !!e.payload;
-        isAgentProcessing = active;
+    // ── Agent processing ──
+    event.listen('agent_processing', (e) => {
+      const active = !!e.payload;
+      isAgentProcessing = active;
+      console.log('[Indicator] Agent processing:', active);
 
-        if (active) {
-          agentFinalText = '';
-          if (closeTimerId) { clearTimeout(closeTimerId); closeTimerId = null; }
-          applyIntent('agent');
-          panel.classList.add('agent-active');
-          setHeaderLabel('AI · 思考中');
+      if (active) {
+        // Reset text accumulator for a new agent run
+        agentFinalText = '';
+        if (closeTimerId) { clearTimeout(closeTimerId); closeTimerId = null; }
+        applyIntent('agent');
+        panel.classList.add('agent-active');
+        expandFeed();
+        showPanel();
+      } else {
+        panel.classList.remove('agent-active');
+        clearDictationText();
+
+        // If the agent produced displayable text, enter result-display mode
+        if (agentFinalText.trim()) {
+          console.log('[Indicator] Agent has text result, entering result-display mode');
           expandFeed();
-          showPanel();
+          enterResultDisplay();
         } else {
-          panel.classList.remove('agent-active');
-          clearDictationText();
-
-          if (agentFinalText.trim()) {
-            expandFeed();
-            enterResultDisplay();
-          } else {
-            panel.classList.add('dictation-hidden');
-            if (closeTimerId) clearTimeout(closeTimerId);
-            closeTimerId = setTimeout(() => {
-              closeTimerId = null;
-              if (!isRecording && !isProcessing && !isLlmProcessing && !isFadingOut && !isResultDisplay) {
-                collapseFeed();
-                startFadeOut();
-              }
-            }, 1200);
-          }
+          // Pure action (no text output) — hide dictation and auto-close after a short pause
+          panel.classList.add('dictation-hidden');
+          // But save the timer ID in case `agent_end` arrives late with text!
+          if (closeTimerId) clearTimeout(closeTimerId);
+          closeTimerId = setTimeout(() => {
+            closeTimerId = null;
+            if (!isRecording && !isProcessing && !isLlmProcessing && !isFadingOut && !isResultDisplay) {
+              collapseFeed();
+              startFadeOut();
+            }
+          }, 2500);
         }
-      });
+      }
+    });
 
-      event.listen('agent_event', (e) => {
-        const data = e.payload;
-        if (data && data.type === 'agent_end') {
-          handleAgentEvent(data);
-          if (agentFinalText.trim() && !isResultDisplay) {
-            expandFeed();
-            enterResultDisplay();
-          }
-          return;
-        }
-        if (!isAgentProcessing) return;
+    // ── Agent events ──
+    event.listen('agent_event', (e) => {
+      // Handle agent_end even after processing flag cleared
+      const data = e.payload;
+      if (data && data.type === 'agent_end') {
         handleAgentEvent(data);
-      });
+        
+        // Race condition fix: if agent_processing = false arrived earlier
+        // but now we finally have text, we must abort the auto-close and display it
+        if (!isAgentProcessing && !isResultDisplay && agentFinalText.trim()) {
+          console.log('[Indicator] Late text arrived via agent_end, entering result-display mode');
+          if (closeTimerId) { clearTimeout(closeTimerId); closeTimerId = null; }
+          panel.classList.remove('dictation-hidden');
+          expandFeed();
+          enterResultDisplay();
+        }
+        return;
+      }
+      if (!isAgentProcessing) return;
+      handleAgentEvent(data);
+    });
 
+      // ── Confirmation request (inline in feed) ──
       event.listen('confirmation_request', (e) => {
         handleConfirmationRequest(e.payload);
         showPanel();
@@ -1445,13 +1395,14 @@
     }
 
     // ─────────────────────────────────────────────
-    // Result-display interaction
+    // Result-display interaction handlers
     // ─────────────────────────────────────────────
     function setupResultDisplayInteraction() {
       dismissBar.addEventListener('click', () => {
         if (isResultDisplay) dismissResult();
       });
 
+      // Esc key to dismiss
       document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && isResultDisplay) {
           e.preventDefault();
@@ -1459,45 +1410,58 @@
         }
       });
 
+      // Copy logic
       copyBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
-        if (!agentFinalText) return;
-        const flashCopied = () => {
-          copyBtn.classList.add('copied');
-          copyIcon.style.display = 'none';
-          checkIcon.style.display = 'block';
-          setTimeout(() => {
-            copyBtn.classList.remove('copied');
-            copyIcon.style.display = 'block';
-            checkIcon.style.display = 'none';
-          }, 2000);
-        };
-        try {
-          await navigator.clipboard.writeText(agentFinalText);
-          flashCopied();
-        } catch (err) {
+        if (agentFinalText) {
           try {
-            if (window.__TAURI__ && window.__TAURI__.clipboard) {
-              await window.__TAURI__.clipboard.writeText(agentFinalText);
-              flashCopied();
-              return;
-            }
-          } catch (_) {}
-          showError('复制失败');
+            await navigator.clipboard.writeText(agentFinalText);
+            copyBtn.classList.add('copied');
+            copyIcon.style.display = 'none';
+            checkIcon.style.display = 'block';
+            setTimeout(() => {
+              copyBtn.classList.remove('copied');
+              copyIcon.style.display = 'block';
+              checkIcon.style.display = 'none';
+            }, 2000);
+          } catch (err) {
+            console.error('[Indicator] Failed to copy:', err);
+            // Fallback for secure context issues etc
+            try {
+              if (window.__TAURI__ && window.__TAURI__.clipboard) {
+                await window.__TAURI__.clipboard.writeText(agentFinalText);
+                copyBtn.classList.add('copied');
+                copyIcon.style.display = 'none';
+                checkIcon.style.display = 'block';
+                setTimeout(() => {
+                  copyBtn.classList.remove('copied');
+                  copyIcon.style.display = 'block';
+                  checkIcon.style.display = 'none';
+                }, 2000);
+                return;
+              }
+            } catch (fallbackErr) {}
+            showError('复制失败');
+          }
         }
       });
 
+      // Stop Agent logic
       stopAgentBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
         try {
+          // Disable button immediately to prevent double-clicks
           stopAgentBtn.style.pointerEvents = 'none';
           stopAgentBtn.style.opacity = '0.5';
+          
           if (window.__TAURI__ && window.__TAURI__.core) {
             await window.__TAURI__.core.invoke('cancel_agent');
           }
         } catch (err) {
           console.error('[Indicator] Failed to cancel agent:', err);
         } finally {
+          // The agent_processing event will eventually hide the button anyway, 
+          // but we can let the user click again if the cancel command somehow failed.
           setTimeout(() => {
             stopAgentBtn.style.pointerEvents = 'auto';
             stopAgentBtn.style.opacity = '1';
@@ -1528,19 +1492,24 @@
       console.log('[Indicator] Initializing…');
       try {
         const tauri = await waitForTauri();
+        console.log('[Indicator] Tauri IPC ready');
         tauriEvent  = tauri.event;
         tauriWindow = tauri.window;
         setupEventListeners(tauriEvent);
         setupResultDisplayInteraction();
         animate();
-        console.log('[Indicator] Ready');
-      } catch (e) {
-        console.error('[Indicator] Init failed:', e);
-        showError('初始化失败');
+        console.log('[Indicator] Initialization complete');
+      } catch (err) {
+        showError('Indicator init failed: ' + err.message);
+        console.error('[Indicator] Init failed:', err);
       }
     }
 
-    init();
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', init);
+    } else {
+      init();
+    }
   </script>
 </body>
 </html>

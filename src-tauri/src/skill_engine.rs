@@ -10,6 +10,10 @@ use crate::state::{
 use crate::storage::AppConfig;
 use crate::window;
 
+fn text_char_count(text: &str) -> usize {
+    text.chars().count()
+}
+
 // ---------------------------------------------------------------------------
 // Skill session management
 // ---------------------------------------------------------------------------
@@ -883,7 +887,7 @@ pub fn spawn_skill_transcript_processing<R: Runtime>(
     println!(
         "[SKILL] #{} Streaming update: {} chars, preview='{}'",
         seq_id,
-        text.len(),
+        text_char_count(&text),
         preview_text(&text, 80)
     );
 

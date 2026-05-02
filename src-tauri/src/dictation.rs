@@ -13,6 +13,10 @@ use crate::state::{
 use crate::storage::HistoryItem;
 use crate::window;
 
+fn text_char_count(text: &str) -> usize {
+    text.chars().count()
+}
+
 /// Process transcribed text: apply LLM correction if enabled, save to history, emit event, paste
 pub fn process_transcription<R: Runtime>(
     app_handle: &AppHandle<R>,
@@ -35,7 +39,7 @@ pub fn process_transcription<R: Runtime>(
     println!(
         "[TRANSCRIPTION] #{} Processing: {} chars, preview='{}'",
         seq_id,
-        text.len(),
+        text_char_count(&text),
         preview_text(&text, 80)
     );
 
@@ -174,7 +178,7 @@ pub fn process_transcription_for_agent<R: Runtime>(
         return;
     }
 
-    println!("[AGENT] #{} Processing: {} chars, preview='{}'", seq_id, text.len(), preview_text(&text, 80));
+    println!("[AGENT] #{} Processing: {} chars, preview='{}'", seq_id, text_char_count(&text), preview_text(&text, 80));
 
     let storage = app_handle.state::<StorageState>();
     let config = storage.load_config();
@@ -330,6 +334,67 @@ pub fn process_transcription_for_agent<R: Runtime>(
             }
         }
 
+        // ------------------------------------------------------------------
+        // Session wiring (Phase 2):
+        // - continuous_mode=true  -> reuse `storage.current_session_id` (or create
+        //   one), seed Agent.messages by replaying the log, and persist new
+        //   messages via `set_on_message`.
+        // - continuous_mode=false -> always create a fresh session.
+        // ------------------------------------------------------------------
+        let storage_for_session = app_handle_clone.state::<StorageState>();
+        let session_id = if agent_config.continuous_mode {
+            if let Some(existing) = storage_for_session.current_session_id() {
+                if let Ok(store) = agent::session::SessionStore::open(&app_dir, &existing) {
+                    if let Ok(prior) = store.replay_messages() {
+                        if !prior.is_empty() {
+                            agent.seed_messages(prior);
+                        }
+                    }
+                    Some(existing)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let session_id = match session_id {
+            Some(id) => id,
+            None => {
+                let store = match agent::session::SessionStore::create(&app_dir, None, None) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("[AGENT] #{} session create failed: {}", seq_id, e);
+                        let id = seq_id;
+                        std::thread::spawn(move || { output_text(&text, id); }).join().ok();
+                        return;
+                    }
+                };
+                let id = store.session_id.clone();
+                if agent_config.continuous_mode {
+                    storage_for_session.set_current_session_id(Some(id.clone()));
+                }
+                id
+            }
+        };
+
+        // Persist every appended message to the session log on a background
+        // thread (we open the file fresh each time to avoid sharing &mut state
+        // across the FnMut/Fn boundary).
+        let session_dir = app_dir.clone();
+        let session_id_for_cb = session_id.clone();
+        agent.set_on_message(move |msg| {
+            if let Ok(mut store) =
+                agent::session::SessionStore::open(&session_dir, &session_id_for_cb)
+            {
+                let _ = store.append(agent::session::SessionEntryKind::Message {
+                    message: msg.clone(),
+                });
+            }
+        });
+
         // Subscribe to events for real-time UI updates
         let mut event_rx = agent.subscribe();
         let event_handle = app_handle_clone.clone();
@@ -351,7 +416,7 @@ pub fn process_transcription_for_agent<R: Runtime>(
         // Show indicator
         app_handle_clone.emit("agent_processing", true).ok();
 
-        match agent.process(&text).await {
+        match agent.prompt(&text).await {
             Ok(result) => {
                 // Clear the cancel token — agent is done.
                 if let Ok(mut guard) = agent_cancel_clone.lock() { *guard = None; }
@@ -415,7 +480,7 @@ pub fn process_transcription_for_agent<R: Runtime>(
 
 /// Paste text into the currently focused window using clipboard + Ctrl+V.
 pub fn output_text(text: &str, seq_id: u64) {
-    println!("[OUTPUT] #{} start: {} chars", seq_id, text.len());
+    println!("[OUTPUT] #{} start: {} chars", seq_id, text_char_count(text));
 
     const INPUT_SETTLE_DELAY_MS: u64 = 80;
     std::thread::sleep(std::time::Duration::from_millis(INPUT_SETTLE_DELAY_MS));
@@ -486,8 +551,6 @@ pub fn begin_recording_session<R: Runtime>(
     window::emit_dictation_intent(app_handle, intent);
     window::show_indicator_window(app_handle);
 
-    let storage = app_handle.state::<StorageState>();
-    let config = storage.load_config();
     let asr = app_handle.state::<AsrState>();
     let handle = app_handle.clone();
     let skill_session_id = if skill_mode {
@@ -498,8 +561,6 @@ pub fn begin_recording_session<R: Runtime>(
     match asr.start_streaming_session(
         stream_rx,
         sample_rate,
-        config.online_asr_config,
-        config.proxy,
         move |text| {
             handle.emit("stream_update", &text).ok();
             if skill_mode {
@@ -591,7 +652,7 @@ pub fn dispatch_final_transcription<R: Runtime>(
         log_tag,
         seq_id,
         intent,
-        text.len(),
+        text_char_count(&text),
         preview_text(&text, 80)
     );
     process_transcription(

@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 interface AudioVisualizerProps {
     isRecording: boolean;
     className?: string;
+    eventName?: string;
 }
 
 // Minimalist bar for audio visualization
@@ -32,7 +33,7 @@ class Bar {
     }
 }
 
-export function AudioVisualizer({ isRecording, className }: AudioVisualizerProps) {
+export function AudioVisualizer({ isRecording, className, eventName = "audio_level" }: AudioVisualizerProps) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const audioLevelRef = useRef(0);
     const smoothedLevelRef = useRef(0);
@@ -53,7 +54,7 @@ export function AudioVisualizer({ isRecording, className }: AudioVisualizerProps
             }
         }
 
-        const unlisten = listen<number>("audio_level", (event) => {
+        const unlisten = listen<number>(eventName, (event) => {
             const raw = Math.min(event.payload * 6, 1.0);
             audioLevelRef.current = Math.sqrt(raw);
         });
@@ -61,7 +62,7 @@ export function AudioVisualizer({ isRecording, className }: AudioVisualizerProps
         return () => {
             unlisten.then(f => f());
         };
-    }, []);
+    }, [eventName]);
 
     useEffect(() => {
         const canvas = canvasRef.current;

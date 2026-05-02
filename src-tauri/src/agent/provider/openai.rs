@@ -5,6 +5,7 @@ use crate::agent::core::request::*;
 use crate::agent::error::AgentError;
 use crate::agent::provider::{LlmProvider, LlmStream, ProviderCapabilities};
 use crate::http_client::build_client;
+use crate::state::preview_text;
 use crate::storage::ProxyConfig;
 
 pub struct OpenAiProvider {
@@ -30,6 +31,10 @@ impl OpenAiProvider {
             _model: model.to_string(),
         })
     }
+}
+
+fn response_preview(text: &str, max_chars: usize) -> String {
+    preview_text(text, max_chars)
 }
 
 #[async_trait]
@@ -95,12 +100,13 @@ impl LlmProvider for OpenAiProvider {
         let status = response.status();
         let response_text = response.text().await.unwrap_or_default();
         println!("[AGENT] LLM response status: {}", status);
-        println!("[AGENT] LLM response body (first 2000 chars): {}", &response_text[..response_text.len().min(2000)]);
 
         if !status.is_success() {
+            let preview = response_preview(&response_text, 400);
+            eprintln!("[AGENT] LLM error response preview: {}", preview);
             return Err(AgentError::Provider(format!(
                 "API error ({}): {}",
-                status, response_text
+                status, preview
             )));
         }
 
@@ -108,7 +114,13 @@ impl LlmProvider for OpenAiProvider {
         // For now, collect the full response and parse as non-streaming
         // SSE streaming will be added in the stream.rs task
         let response_json: Value = serde_json::from_str(&response_text)
-            .map_err(|e| AgentError::Provider(format!("Parse error: {} | raw response: {}", e, &response_text[..response_text.len().min(500)])))?;
+            .map_err(|e| {
+                AgentError::Provider(format!(
+                    "Parse error: {} | raw response preview: {}",
+                    e,
+                    response_preview(&response_text, 500)
+                ))
+            })?;
 
         let events = parse_chat_response(&response_json);
         Ok(Box::pin(
@@ -175,8 +187,28 @@ fn parse_chat_response(value: &Value) -> Vec<LlmStreamEvent> {
                     arguments_delta: arguments,
                 });
             }
-            events.push(LlmStreamEvent::ToolCallEnd { _index: index });
+            events.push(LlmStreamEvent::ToolCallEnd { index });
         }
+    }
+
+    // Usage (OpenAI returns usage on the top-level body of non-stream calls)
+    if let Some(usage) = value.get("usage") {
+        let input = usage.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0);
+        let output = usage.get("completion_tokens").and_then(Value::as_u64).unwrap_or(0);
+        let cache_read = usage
+            .get("prompt_tokens_details")
+            .and_then(|d| d.get("cached_tokens"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let total = usage.get("total_tokens").and_then(Value::as_u64).unwrap_or(0);
+        events.push(LlmStreamEvent::Usage(crate::agent::core::usage::Usage {
+            input,
+            output,
+            cache_read,
+            cache_write: 0,
+            total,
+            ..Default::default()
+        }));
     }
 
     // Stop reason
@@ -188,4 +220,14 @@ fn parse_chat_response(value: &Value) -> Vec<LlmStreamEvent> {
     events.push(LlmStreamEvent::Done { stop_reason });
 
     events
+}
+
+#[cfg(test)]
+mod tests {
+    use super::response_preview;
+
+    #[test]
+    fn response_preview_handles_multibyte_text() {
+        assert_eq!(response_preview("你好，世界", 4), "你好，世");
+    }
 }
