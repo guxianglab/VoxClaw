@@ -325,48 +325,70 @@ fn build_input_stream<R: tauri::Runtime>(
                     eprintln!("[AUDIO] Device disconnected, initiating auto-recovery in background...");
                     let app_handle = app_handle.clone();
                     
-                    // Trigger a background worker to try auto-reconnecting
                     tauri::async_runtime::spawn(async move {
                         use tauri::Manager;
                         use tauri::Emitter;
                         
-                        // Notify frontend it dropped
                         let _ = app_handle.emit("audio_device_disconnected", "");
 
-                        // We will try up to 3 times to get the device back with exponential backoff
-                        let mut backoff_secs = 2;
-                        
-                        for attempt in 1..=3 {
-                            eprintln!("[AUDIO] Auto-reconnect attempt {} in {} seconds...", attempt, backoff_secs);
-                            tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
-                            
-                            // 1. Fetch current target device from storage config
-                            let device_id = if let Some(storage) = app_handle.try_state::<crate::state::StorageState>() {
-                                storage.load_config().input_device
-                            } else {
-                                String::new()
-                            };
-                            
-                            // 2. Perform the reset mapping
-                            let mut success = false;
+                        // Small initial delay to let OS settle
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+                        // 1. Fetch configured (preferred) device
+                        let preferred_id = if let Some(storage) = app_handle.try_state::<crate::state::StorageState>() {
+                            storage.load_config().input_device
+                        } else {
+                            String::new()
+                        };
+
+                        // 2. Try: preferred → default ("") → any available
+                        let candidates: Vec<String> = {
+                            let mut c = vec![preferred_id.clone()];
+                            if !preferred_id.is_empty() {
+                                c.push(String::new()); // default device
+                            }
+                            // Also add all currently-available devices
+                            for dev in AudioService::get_input_devices() {
+                                if !c.contains(&dev.id) {
+                                    c.push(dev.id);
+                                }
+                            }
+                            c
+                        };
+
+                        let mut recovered = false;
+                        for (i, candidate) in candidates.iter().enumerate() {
+                            let label = if candidate.is_empty() { "<default>".to_string() } else { candidate.clone() };
+                            eprintln!("[AUDIO] Auto-recovery trying candidate {}: '{}'", i, label);
+
                             if let Some(audio_state) = app_handle.try_state::<crate::state::AudioState>() {
                                 if let Ok(mut audio) = audio_state.lock() {
-                                    if let Err(e) = audio.init_with_device(&device_id, app_handle.clone()) {
-                                        eprintln!("[AUDIO] Auto-recovery attempt {} failed: {}", attempt, e);
-                                    } else {
-                                        success = true;
+                                    if audio.init_with_device(candidate, app_handle.clone()).is_ok() {
+                                        eprintln!("[AUDIO] Auto-recovery succeeded with '{}'", label);
+                                        let _ = app_handle.emit("audio_reconnected", label);
+                                        recovered = true;
+                                        break;
                                     }
                                 }
                             }
-                            
-                            if success {
-                                eprintln!("[AUDIO] Auto-recovery successful!");
-                                // Notify frontend that UI can sync state if necessary
-                                let _ = app_handle.emit("audio_reconnected", "");
-                                break;
-                            } else {
-                                backoff_secs *= 2; // e.g. 2s -> 4s -> 8s
+                        }
+
+                        if !recovered {
+                            eprintln!("[AUDIO] Auto-recovery: no usable device found, will keep monitoring");
+                        }
+
+                        // 3. Start a background monitor: watch for the preferred device to come back
+                        if !preferred_id.is_empty() && recovered {
+                            // Check if we ended up on a fallback device
+                            let current = if let Some(audio_state) = app_handle.try_state::<crate::state::AudioState>() {
+                                audio_state.lock().ok().map(|a| a.get_current_device_name()).unwrap_or_default()
+                            } else { String::new() };
+                            if current != preferred_id {
+                                spawn_preferred_device_monitor(app_handle.clone(), preferred_id);
                             }
+                        } else if !recovered {
+                            // No device at all — monitor for ANY device
+                            spawn_any_device_monitor(app_handle.clone());
                         }
                     });
                 }
@@ -497,4 +519,176 @@ fn current_time_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+// ─────────────────────────────────────────────────────────────
+//  后台设备监视
+// ─────────────────────────────────────────────────────────────
+
+/// Monitor that polls for the user's preferred device to come back online,
+/// then switches to it automatically.
+fn spawn_preferred_device_monitor<R: tauri::Runtime>(
+    app_handle: tauri::AppHandle<R>,
+    preferred_id: String,
+) {
+    tauri::async_runtime::spawn(async move {
+        use tauri::Manager;
+        use tauri::Emitter;
+        // Poll every 3 seconds, up to ~2 minutes
+        for _ in 0..40 {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            let devices = AudioService::get_input_devices();
+            if devices.iter().any(|d| d.id == preferred_id) {
+                eprintln!("[AUDIO] Preferred device '{}' is back, switching...", preferred_id);
+                if let Some(audio_state) = app_handle.try_state::<crate::state::AudioState>() {
+                    if let Ok(mut audio) = audio_state.lock() {
+                        if audio.init_with_device(&preferred_id, app_handle.clone()).is_ok() {
+                            eprintln!("[AUDIO] Switched back to preferred device '{}'", preferred_id);
+                            let _ = app_handle.emit("audio_reconnected", preferred_id.clone());
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("[AUDIO] Preferred device monitor timed out");
+    });
+}
+
+/// Monitor that polls for ANY device when none were available at disconnect time.
+fn spawn_any_device_monitor<R: tauri::Runtime>(app_handle: tauri::AppHandle<R>) {
+    tauri::async_runtime::spawn(async move {
+        use tauri::Manager;
+        use tauri::Emitter;
+        for _ in 0..40 {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+            let preferred_id = if let Some(storage) = app_handle.try_state::<crate::state::StorageState>() {
+                storage.load_config().input_device
+            } else {
+                String::new()
+            };
+
+            // Build candidate list: preferred → default → any
+            let mut candidates = vec![preferred_id.clone()];
+            if !preferred_id.is_empty() {
+                candidates.push(String::new());
+            }
+            for dev in AudioService::get_input_devices() {
+                if !candidates.contains(&dev.id) {
+                    candidates.push(dev.id);
+                }
+            }
+
+            for candidate in &candidates {
+                if let Some(audio_state) = app_handle.try_state::<crate::state::AudioState>() {
+                    if let Ok(mut audio) = audio_state.lock() {
+                        if audio.init_with_device(candidate, app_handle.clone()).is_ok() {
+                            let label = if candidate.is_empty() { "<default>".to_string() } else { candidate.clone() };
+                            eprintln!("[AUDIO] Device monitor recovered with '{}'", label);
+                            let _ = app_handle.emit("audio_reconnected", label);
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("[AUDIO] Any-device monitor timed out");
+    });
+}
+
+/// Long-running device watcher: detects device list changes (plug/unplug) and
+/// re-initializes the audio stream when the current device disappears or the
+/// preferred device reappears. Call once during app startup.
+pub fn start_device_watcher<R: tauri::Runtime + 'static>(app_handle: tauri::AppHandle<R>) {
+    tauri::async_runtime::spawn(async move {
+        use tauri::Manager;
+        use tauri::Emitter;
+
+        let mut known_ids: Vec<String> = AudioService::get_input_devices()
+            .iter()
+            .map(|d| d.id.clone())
+            .collect();
+
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+            let current_ids: Vec<String> = AudioService::get_input_devices()
+                .iter()
+                .map(|d| d.id.clone())
+                .collect();
+
+            if current_ids == known_ids {
+                continue;
+            }
+
+            let added: Vec<String> = current_ids.iter().filter(|id| !known_ids.contains(id)).cloned().collect();
+            let removed: Vec<String> = known_ids.iter().filter(|id| !current_ids.contains(id)).cloned().collect();
+
+            if !added.is_empty() || !removed.is_empty() {
+                eprintln!("[AUDIO] Device change detected — added: {:?}, removed: {:?}", added, removed);
+            }
+
+            known_ids = current_ids;
+
+            // Get current active device and preferred device
+            let (current_device, preferred_id) = {
+                let current = if let Some(audio_state) = app_handle.try_state::<crate::state::AudioState>() {
+                    audio_state.lock().ok().map(|a| a.get_current_device_name()).unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                let preferred = if let Some(storage) = app_handle.try_state::<crate::state::StorageState>() {
+                    storage.load_config().input_device
+                } else {
+                    String::new()
+                };
+                (current, preferred)
+            };
+
+            // Case 1: current device was removed → auto-recover
+            if !current_device.is_empty() && !removed.is_empty() && removed.iter().any(|id| *id == current_device) {
+                eprintln!("[AUDIO] Active device '{}' was removed, auto-recovering...", current_device);
+                let mut candidates = vec![preferred_id.clone()];
+                if !preferred_id.is_empty() {
+                    candidates.push(String::new());
+                }
+                for id in &known_ids {
+                    if !candidates.contains(id) {
+                        candidates.push(id.clone());
+                    }
+                }
+                for candidate in &candidates {
+                    if let Some(audio_state) = app_handle.try_state::<crate::state::AudioState>() {
+                        if let Ok(mut audio) = audio_state.lock() {
+                            if audio.init_with_device(candidate, app_handle.clone()).is_ok() {
+                                let label = if candidate.is_empty() { "<default>".to_string() } else { candidate.clone() };
+                                eprintln!("[AUDIO] Watcher recovered with '{}'", label);
+                                let _ = app_handle.emit("audio_reconnected", label);
+                                break;
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+
+            // Case 2: preferred device was added back → switch to it
+            if !preferred_id.is_empty()
+                && current_device != preferred_id
+                && !added.is_empty()
+                && added.iter().any(|id| *id == preferred_id)
+            {
+                eprintln!("[AUDIO] Preferred device '{}' reappeared, switching...", preferred_id);
+                if let Some(audio_state) = app_handle.try_state::<crate::state::AudioState>() {
+                    if let Ok(mut audio) = audio_state.lock() {
+                        if audio.init_with_device(&preferred_id, app_handle.clone()).is_ok() {
+                            eprintln!("[AUDIO] Switched back to preferred device '{}'", preferred_id);
+                            let _ = app_handle.emit("audio_reconnected", preferred_id.clone());
+                        }
+                    }
+                }
+            }
+        }
+    });
 }

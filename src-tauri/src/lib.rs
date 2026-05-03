@@ -444,6 +444,10 @@ pub fn run() {
             app.manage(agent_cancel_state);
             app.manage(commands::init_meeting_state());
 
+            // Start background device watcher for auto-recovery on plug/unplug
+            let watcher_handle = app.handle().clone();
+            audio::start_device_watcher(watcher_handle);
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

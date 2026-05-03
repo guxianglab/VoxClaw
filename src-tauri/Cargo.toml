@@ -1,6 +1,6 @@
 [package]
 name = "voxclaw"
-version = "1.0.6"
+version = "1.0.7"
 description = "VoxClaw: The Next Gen AI Voice Assistant"
 authors = ["GXJ"]
 edition = "2021"
