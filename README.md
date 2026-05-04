@@ -26,13 +26,15 @@ Whether you are writing code, sending emails, or triggering system skills, VoxCl
 
 ## ✨ Features
 
-- 🎙️ **Streaming Recognition:** Real-time online ASR with live partial transcript previews.
-- ⌨️ **Global Input:** Write directly into any native application, chat, browser, IDE, or system dialog using intelligent clipboard injection (`Ctrl+V`).
+- 🎙️ **Dual-Engine Recognition:** Real-time online ASR with live partial transcript previews, plus a brand new **Offline Mode** powered by local SenseVoice models for 100% privacy and offline usage.
+- ⌨️ **Global Input:** Write directly into any native application, chat, browser, IDE, or system dialog using intelligent clipboard injection (`Ctrl+V`) and a low-latency Windows API raw input listener.
 - 🤖 **Autonomous AI Agent:** A powerful ReAct agent that can browse the web, edit files, run commands, and control your system through voice.
+- 📅 **Meeting Management:** Advanced meeting management features with session handling to streamline your daily workflows.
 - 🎯 **Triple Modes:**
   - **Dictation Mode:** Transcribe and type text seamlessly with optional LLM polishing.
-  - **Agent Mode (New):** Invoke an autonomous agent to perform complex multi-step tasks (e.g., "Find the latest news about Rust and summarize it in a new file").
+  - **Agent Mode:** Invoke an autonomous agent to perform complex multi-step tasks (e.g., "Find the latest news about Rust and summarize it in a new file").
   - **Skills Mode:** Quick voice commands for specific system actions.
+- 🎧 **Audio Robustness:** Advanced audio processing module with auto-recovery for audio devices on disconnect or sleep mode via device watcher.
 - 🎨 **Tasteful UI:** A gorgeous, unobtrusive glassmorphism indicator that floats intelligently on your screen.
 
 ---
