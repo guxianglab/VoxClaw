@@ -71,6 +71,8 @@ pub fn run() {
             {
                 Ok(window) => {
                     println!("Indicator window created successfully: {:?}", window.label());
+                    // Immediately set click-through so the invisible window never blocks mouse events.
+                    crate::window::init_indicator_click_through(app.handle());
                 },
                 Err(e) => eprintln!("Failed to create indicator window: {:?}", e),
             }
@@ -472,6 +474,7 @@ pub fn run() {
             commands::respond_confirmation,
             commands::add_safety_rule,
             commands::set_indicator_window_expanded,
+            commands::hide_indicator,
             commands::cancel_agent,
             commands::session_list,
             commands::session_load,

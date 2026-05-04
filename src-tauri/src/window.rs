@@ -53,15 +53,54 @@ pub fn set_indicator_window_layout<R: Runtime>(app_handle: &AppHandle<R>, expand
 // Window show / hide
 // ---------------------------------------------------------------------------
 
+/// Make the indicator window click-through (transparent to mouse events) or interactive.
+/// On Windows, we toggle WS_EX_TRANSPARENT on the extended window style.
+/// This MUST be called after every show/hide transition.
+#[cfg(target_os = "windows")]
+fn set_indicator_click_through(hwnd: windows::Win32::Foundation::HWND, click_through: bool) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE,
+    };
+    // WS_EX_TRANSPARENT (0x20): mouse events fall through to the window beneath.
+    // WS_EX_LAYERED   (0x80000): required on some Windows versions for WS_EX_TRANSPARENT to work
+    //                             on a WebView-hosted window.
+    const WS_EX_LAYERED: isize     = 0x0008_0000;
+    const WS_EX_TRANSPARENT: isize = 0x0000_0020;
+    unsafe {
+        let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let new_style = if click_through {
+            ex_style | WS_EX_TRANSPARENT | WS_EX_LAYERED
+        } else {
+            (ex_style | WS_EX_LAYERED) & !WS_EX_TRANSPARENT
+        };
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_style);
+    }
+}
+
+/// Apply initial click-through state to the indicator window right after creation.
+/// Call this once during app setup so the window never blocks input while invisible.
+pub fn init_indicator_click_through<R: Runtime>(app_handle: &AppHandle<R>) {
+    #[cfg(target_os = "windows")]
+    if let Some(window) = app_handle.get_webview_window("indicator") {
+        if let Ok(hwnd) = window.hwnd() {
+            use windows::Win32::Foundation::HWND;
+            let hwnd_ptr: HWND = unsafe { std::mem::transmute(hwnd) };
+            set_indicator_click_through(hwnd_ptr, true);
+        }
+    }
+}
+
 pub fn show_indicator_window<R: Runtime>(app_handle: &AppHandle<R>) {
     set_indicator_window_layout(app_handle, false);
     if let Some(window) = app_handle.get_webview_window("indicator") {
         #[cfg(target_os = "windows")]
         if let Ok(hwnd) = window.hwnd() {
-            use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
             use windows::Win32::Foundation::HWND;
+            use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
             unsafe {
                 let hwnd_ptr: HWND = std::mem::transmute(hwnd);
+                // First make it interactive (remove click-through), THEN show without activating.
+                set_indicator_click_through(hwnd_ptr, false);
                 let _ = ShowWindow(hwnd_ptr, SW_SHOWNOACTIVATE);
             }
             return;
@@ -79,13 +118,30 @@ pub fn show_main_window<R: Runtime>(app_handle: &AppHandle<R>) {
     }
 }
 
+pub fn hide_indicator_window<R: Runtime>(app_handle: &AppHandle<R>) {
+    if let Some(window) = app_handle.get_webview_window("indicator") {
+        #[cfg(target_os = "windows")]
+        if let Ok(hwnd) = window.hwnd() {
+            use windows::Win32::Foundation::HWND;
+            use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+            unsafe {
+                let hwnd_ptr: HWND = std::mem::transmute(hwnd);
+                // Re-enable click-through BEFORE hiding so the brief transition
+                // period cannot swallow any stray mouse events.
+                set_indicator_click_through(hwnd_ptr, true);
+                let _ = ShowWindow(hwnd_ptr, SW_HIDE);
+            }
+            return;
+        }
+        window.hide().ok();
+    }
+}
+
 pub fn hide_main_window<R: Runtime>(app_handle: &AppHandle<R>) {
     if let Some(window) = app_handle.get_webview_window("main") {
         window.hide().ok();
     }
-    if let Some(indicator) = app_handle.get_webview_window("indicator") {
-        indicator.hide().ok();
-    }
+    hide_indicator_window(app_handle);
 }
 
 // ---------------------------------------------------------------------------

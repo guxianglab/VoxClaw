@@ -919,13 +919,19 @@
       isFadingOut = true;
       panel.classList.add('fade-out');
       setTimeout(() => {
-        if (!tauriWindow) { resetState(); return; }
-        tauriWindow.getCurrentWindow().hide().then(() => {
-          setTimeout(resetState, 20);
-        }).catch(e => {
-          console.error('[Indicator] hide failed:', e);
-          resetState();
-        });
+        if (!window.__TAURI__) { resetState(); return; }
+        // Use the backend command so WS_EX_TRANSPARENT is re-applied
+        // before the window is hidden, preventing any click-blocking race.
+        window.__TAURI__.core.invoke('hide_indicator')
+          .then(() => { setTimeout(resetState, 20); })
+          .catch(e => {
+            console.error('[Indicator] hide_indicator failed:', e);
+            // Fall back to JS hide
+            if (tauriWindow) {
+              tauriWindow.getCurrentWindow().hide().catch(() => {});
+            }
+            resetState();
+          });
       }, 240);
     }
 
