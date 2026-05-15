@@ -4,12 +4,13 @@
 //! returning so the existing `stream_update` UI flow still sees text.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use anyhow::{anyhow, Result};
 use ndarray::{Array1, Array3};
 use ort::{
+    ep::directml::DirectML,
     session::{builder::GraphOptimizationLevel, Session},
     value::Tensor,
 };
@@ -17,13 +18,27 @@ use rubato::{FastFixedIn, PolynomialDegree, Resampler};
 
 use crate::storage::SenseVoiceOnnxConfig;
 
-use super::super::{AsrCapabilities, AsrProvider, AsrSession, AsrStreamParams};
+use super::super::{AsrCapabilities, AsrProvider, AsrSession, AsrStreamParams, TranscriptSegment};
 use super::decode::{ctc_greedy, TokenVocab};
 use super::fbank::{apply_cmvn_lfr, apply_lfr, parse_cmvn, FbankExtractor, FEAT_DIM};
 use super::model;
 
 const TARGET_SR: f32 = 16_000.0;
-static ORT_RUNTIME_INIT: OnceLock<Result<(), String>> = OnceLock::new();
+
+/// Tracks ONNX Runtime initialization state. Unlike `OnceLock`, this allows
+/// retrying when the first attempt fails (e.g. user installs onnxruntime.dll
+/// while the app is running).
+static ORT_RUNTIME_STATE: std::sync::OnceLock<Mutex<OrtRuntimeState>> = std::sync::OnceLock::new();
+
+enum OrtRuntimeState {
+    NotInitialized,
+    Initialized,
+    Failed(String),
+}
+
+fn get_ort_state() -> &'static Mutex<OrtRuntimeState> {
+    ORT_RUNTIME_STATE.get_or_init(|| Mutex::new(OrtRuntimeState::NotInitialized))
+}
 
 const ONNXRUNTIME_ENV_VARS: &[&str] = &[
     "SONICCLAW_ONNXRUNTIME_DLL",
@@ -50,9 +65,41 @@ fn language_control_id(code: &str) -> Option<i32> {
 const TEXT_NORM_WITH_ITN_ID: i32 = 14;
 
 fn ensure_ort_runtime() -> Result<()> {
-    match ORT_RUNTIME_INIT.get_or_init(|| init_ort_runtime().map_err(|err| err.to_string())) {
-        Ok(()) => Ok(()),
-        Err(err) => Err(anyhow!(err.clone())),
+    let state = get_ort_state();
+    let mut guard = state.lock().map_err(|_| anyhow!("ORT state lock poisoned"))?;
+
+    match &*guard {
+        OrtRuntimeState::Initialized => Ok(()),
+        OrtRuntimeState::Failed(err) => {
+            // Previous attempt failed — retry now (user may have installed the DLL).
+            println!("[SenseVoice] Retrying ONNX Runtime init (previous failure: {})", err);
+            match init_ort_runtime() {
+                Ok(()) => {
+                    *guard = OrtRuntimeState::Initialized;
+                    println!("[SenseVoice] ONNX Runtime init succeeded on retry");
+                    Ok(())
+                }
+                Err(retry_err) => {
+                    let msg = retry_err.to_string();
+                    *guard = OrtRuntimeState::Failed(msg.clone());
+                    Err(anyhow!("ONNX Runtime 加载失败 (已重试): {msg}"))
+                }
+            }
+        }
+        OrtRuntimeState::NotInitialized => {
+            match init_ort_runtime() {
+                Ok(()) => {
+                    *guard = OrtRuntimeState::Initialized;
+                    println!("[SenseVoice] ONNX Runtime initialized successfully");
+                    Ok(())
+                }
+                Err(err) => {
+                    let msg = err.to_string();
+                    *guard = OrtRuntimeState::Failed(msg.clone());
+                    Err(anyhow!("ONNX Runtime 加载失败: {msg}"))
+                }
+            }
+        }
     }
 }
 
@@ -142,14 +189,38 @@ impl SenseVoiceProvider {
             ));
         }
 
-        let session = Session::builder()
-            .map_err(|e| anyhow!("ort builder: {e}"))?
+        let mut builder = Session::builder()
+            .map_err(|e| anyhow!("ort builder: {e}"))?;
+        builder = builder
             .with_optimization_level(GraphOptimizationLevel::Level3)
-            .map_err(|e| anyhow!("ort opt level: {e}"))?
+            .map_err(|e| anyhow!("ort opt level: {e}"))?;
+        builder = builder
             .with_intra_threads(num_cpus_for_inference())
-            .map_err(|e| anyhow!("ort threads: {e}"))?
-            .commit_from_file(model::model_file(&dir))
-            .map_err(|e| anyhow!("ort load model: {e}"))?;
+            .map_err(|e| anyhow!("ort threads: {e}"))?;
+
+        let session = if config.use_gpu {
+            println!("[SenseVoice] use_gpu=true, attempting DirectML...");
+            match builder
+                .clone()
+                .with_execution_providers([DirectML::default().build()])
+                .and_then(|b| b.commit_from_file(model::model_file(&dir)))
+            {
+                Ok(s) => {
+                    println!("[SenseVoice] DirectML session created successfully");
+                    s
+                }
+                Err(e) => {
+                    eprintln!("[SenseVoice] DirectML failed ({}), falling back to CPU", e);
+                    builder
+                        .commit_from_file(model::model_file(&dir))
+                        .map_err(|e| anyhow!("ort load model (CPU fallback): {e}"))?
+                }
+            }
+        } else {
+            builder
+                .commit_from_file(model::model_file(&dir))
+                .map_err(|e| anyhow!("ort load model: {e}"))?
+        };
 
         let vocab = TokenVocab::load(&model::tokens_file(&dir))?;
 
@@ -236,6 +307,7 @@ impl AsrProvider for SenseVoiceProvider {
             collector: Some(collector),
             sample_rate,
             on_update,
+            segments: Arc::new(Mutex::new(Vec::new())),
         }))
     }
 }
@@ -246,6 +318,7 @@ pub struct SenseVoiceSession {
     collector: Option<thread::JoinHandle<()>>,
     sample_rate: u32,
     on_update: Box<dyn Fn(String) + Send + Sync + 'static>,
+    segments: Arc<Mutex<Vec<TranscriptSegment>>>,
 }
 
 impl AsrSession for SenseVoiceSession {
@@ -276,9 +349,52 @@ impl AsrSession for SenseVoiceSession {
         let text = run_inference(&self.inner, &resampled)?;
         if !text.is_empty() {
             (self.on_update)(text.clone());
+            // Build sentence-level segments via simple punctuation splitting.
+            let segs = split_text_into_segments(&text);
+            if let Ok(mut guard) = self.segments.lock() {
+                *guard = segs;
+            }
         }
         Ok(text)
     }
+
+    fn take_segments(&self) -> Vec<TranscriptSegment> {
+        self.segments.lock().map(|g| g.clone()).unwrap_or_default()
+    }
+}
+
+static SEGMENT_REGEX: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+
+/// Naive sentence segmentation for SenseVoice (no timestamps available).
+/// Splits on Chinese/English sentence-ending punctuation.
+fn split_text_into_segments(text: &str) -> Vec<TranscriptSegment> {
+    let re = SEGMENT_REGEX.get_or_init(|| regex::Regex::new(r"[。！？.!?；;]").unwrap());
+    let mut segs = Vec::new();
+    let mut last_end = 0usize;
+    for m in re.find_iter(text) {
+        let end = m.end();
+        let sentence = text[last_end..end].trim();
+        if !sentence.is_empty() {
+            segs.push(TranscriptSegment {
+                start_ms: 0,
+                end_ms: 0,
+                speaker: None,
+                text: sentence.to_string(),
+            });
+        }
+        last_end = end;
+    }
+    // Trailing text without ending punctuation.
+    let trailing = text[last_end..].trim();
+    if !trailing.is_empty() {
+        segs.push(TranscriptSegment {
+            start_ms: 0,
+            end_ms: 0,
+            speaker: None,
+            text: trailing.to_string(),
+        });
+    }
+    segs
 }
 
 fn run_inference(inner: &Inner, samples_16k: &[f32]) -> Result<String> {

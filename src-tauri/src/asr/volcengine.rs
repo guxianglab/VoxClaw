@@ -12,6 +12,7 @@ use flate2::Compression;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use std::io::Write;
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -25,7 +26,7 @@ use tokio_tungstenite::tungstenite::{self, Message};
 
 use crate::storage::{OnlineAsrConfig, ProxyConfig};
 
-use super::{AsrCapabilities, AsrProvider, AsrSession, AsrStreamParams};
+use super::{AsrCapabilities, AsrProvider, AsrSession, AsrStreamParams, TranscriptSegment};
 
 const ASYNC_URL: &str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async";
 const ASR_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -78,8 +79,12 @@ impl AsrProvider for VolcengineProvider {
             }
         });
 
+        let segments_shared = Arc::new(Mutex::new(Vec::<TranscriptSegment>::new()));
+        let segments_for_session = segments_shared.clone();
+
         // Main streaming thread: owns its own current-thread Tokio runtime.
         let handle = thread::spawn(move || {
+            let segments_for_task = segments_shared.clone();
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -172,6 +177,7 @@ impl AsrProvider for VolcengineProvider {
                 }
 
                 let mut seq: i32 = 2;
+
                 let read_task = tokio::spawn(async move {
                     let mut final_text = String::new();
                     let mut latest_text = String::new();
@@ -227,6 +233,25 @@ impl AsrProvider for VolcengineProvider {
                                                     latest_text = text.to_string();
                                                     if msg_type == 0b1001 {
                                                         final_text = latest_text.clone();
+                                                        // Capture utterances on final result
+                                                        if let Some(uts) = result.get("utterances").and_then(|u| u.as_array()) {
+                                                            let mut segs = Vec::new();
+                                                            for (idx, u) in uts.iter().enumerate() {
+                                                                let utt_text = u.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                                                                let start_ms = u.get("start_time").and_then(|t| t.as_u64()).unwrap_or(0);
+                                                                let end_ms = u.get("end_time").and_then(|t| t.as_u64()).unwrap_or(start_ms);
+                                                                let speaker = None; // TODO: real diarization when a model is available
+                                                                segs.push(TranscriptSegment {
+                                                                    start_ms,
+                                                                    end_ms,
+                                                                    speaker,
+                                                                    text: utt_text.to_string(),
+                                                                });
+                                                            }
+                                                            if let Ok(mut guard) = segments_for_task.lock() {
+                                                                *guard = segs;
+                                                            }
+                                                        }
                                                     }
                                                     on_update(latest_text.clone());
                                                 }
@@ -293,6 +318,7 @@ impl AsrProvider for VolcengineProvider {
         Ok(Box::new(VolcengineSession {
             handle: Some(handle),
             tx: Some(tx),
+            segments: segments_for_session,
         }))
     }
 }
@@ -300,6 +326,7 @@ impl AsrProvider for VolcengineProvider {
 pub struct VolcengineSession {
     handle: Option<JoinHandle<Result<String>>>,
     tx: Option<mpsc::Sender<Vec<f32>>>,
+    segments: Arc<Mutex<Vec<TranscriptSegment>>>,
 }
 
 impl AsrSession for VolcengineSession {
@@ -313,6 +340,10 @@ impl AsrSession for VolcengineSession {
             },
             None => Err(anyhow!("Session already finished")),
         }
+    }
+
+    fn take_segments(&self) -> Vec<TranscriptSegment> {
+        self.segments.lock().map(|g| g.clone()).unwrap_or_default()
     }
 }
 

@@ -57,7 +57,10 @@ impl ActiveMeeting {
         //    EOF and can flush.
         capture.stop();
 
-        // 2. Wait for the ASR final transcript.
+        // 2. Extract segments before consuming the ASR session.
+        let asr_segments = asr_session.take_segments();
+
+        // 3. Wait for the ASR final transcript.
         let final_text = match asr_session.finish_and_wait() {
             Ok(t) => t,
             Err(e) => {
@@ -70,11 +73,20 @@ impl ActiveMeeting {
         let duration_ms = started_at_instant.elapsed().as_millis() as u64;
         let ended_at_iso = Utc::now().to_rfc3339();
 
-        let segments = if final_text.trim().is_empty() {
+        let segments = if !asr_segments.is_empty() {
+            asr_segments
+                .into_iter()
+                .map(|s| MeetingSegment {
+                    start_ms: s.start_ms,
+                    end_ms: s.end_ms,
+                    text: s.text,
+                    speaker: s.speaker,
+                })
+                .collect()
+        } else if final_text.trim().is_empty() {
             Vec::new()
         } else {
-            // Single-segment record for now; per-utterance segmentation will
-            // come with the trait-level segment events upgrade.
+            // Fallback: single segment covering the whole duration.
             vec![MeetingSegment {
                 start_ms: 0,
                 end_ms: duration_ms,

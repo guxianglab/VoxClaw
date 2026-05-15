@@ -67,7 +67,7 @@ pub async fn download_sensevoice_model<R: Runtime>(
         config.asr.provider,
         crate::storage::AsrProviderKind::SenseVoiceOnnx
     ) {
-        asr.replace(crate::asr::build_provider(&config.asr, &config.proxy));
+        asr.replace(crate::asr::build_provider(&config.asr, &config.proxy).map_err(|e| e.to_string())?);
     }
 
     Ok(final_dir.display().to_string())

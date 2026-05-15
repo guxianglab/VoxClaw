@@ -9,7 +9,7 @@
 //! module and be wired into [`build_provider`].
 
 use anyhow::{anyhow, Result};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use crate::storage::{AsrConfig, AsrProviderKind, ProxyConfig};
 
@@ -54,31 +54,33 @@ pub trait AsrSession: Send {
     /// Implementations may also expose richer segment data via
     /// [`AsrSession::take_segments`].
     fn finish_and_wait(self: Box<Self>) -> Result<String>;
+
+    /// Return segment-level transcript data (utterances with timestamps).
+    /// Default returns empty — providers that support utterance segmentation
+    /// should override.
+    fn take_segments(&self) -> Vec<TranscriptSegment> {
+        Vec::new()
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
-pub fn build_provider(config: &AsrConfig, proxy: &ProxyConfig) -> Arc<dyn AsrProvider> {
+pub fn build_provider(config: &AsrConfig, proxy: &ProxyConfig) -> Result<Arc<dyn AsrProvider>> {
     match config.provider {
-        AsrProviderKind::Volcengine => Arc::new(volcengine::VolcengineProvider::new(
+        AsrProviderKind::Volcengine => Ok(Arc::new(volcengine::VolcengineProvider::new(
             config.volcengine.clone(),
             proxy.clone(),
-        )),
+        ))),
         AsrProviderKind::SenseVoiceOnnx => {
-            match sensevoice::SenseVoiceProvider::try_new(&config.sensevoice) {
-                Ok(p) => Arc::new(p),
-                Err(err) => {
-                    eprintln!(
-                        "[ASR] SenseVoice unavailable ({err}); falling back to Volcengine"
-                    );
-                    Arc::new(volcengine::VolcengineProvider::new(
-                        config.volcengine.clone(),
-                        proxy.clone(),
-                    ))
-                }
-            }
+            let provider =
+                sensevoice::SenseVoiceProvider::try_new(&config.sensevoice).map_err(|err| {
+                    anyhow!(
+                        "SenseVoice 离线引擎加载失败: {err}。请检查模型文件是否存在，以及 onnxruntime.dll 是否可用。"
+                    )
+                })?;
+            Ok(Arc::new(provider))
         }
     }
 }
@@ -102,8 +104,29 @@ impl AsrService {
     }
 
     pub fn replace(&self, provider: Arc<dyn AsrProvider>) {
-        if let Ok(mut guard) = self.inner.write() {
-            *guard = provider;
+        let name = provider.name();
+        // Retry a few times if the lock is contended by an active session.
+        for attempt in 1..=5 {
+            match self.inner.try_write() {
+                Ok(mut guard) => {
+                    let old = guard.name();
+                    *guard = provider;
+                    println!("[ASR] Provider replaced: {} -> {} (attempt {})", old, name, attempt);
+                    return;
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    if attempt < 5 {
+                        eprintln!("[ASR] Provider replace attempt {} blocked (active session?), retrying...", attempt);
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                    } else {
+                        eprintln!("[ASR] Provider replace FAILED after 5 attempts — lock still held. New provider '{}' NOT applied.", name);
+                    }
+                }
+                Err(std::sync::TryLockError::Poisoned(e)) => {
+                    eprintln!("[ASR] Provider replace FAILED — RwLock poisoned: {}", e);
+                    return;
+                }
+            }
         }
     }
 
@@ -133,6 +156,7 @@ impl AsrService {
         })?;
         Ok(StreamingSession {
             inner: Some(session),
+            segments: Arc::new(Mutex::new(Vec::new())),
         })
     }
 }
@@ -141,13 +165,24 @@ impl AsrService {
 /// downstream code never depends on a concrete type.
 pub struct StreamingSession {
     inner: Option<Box<dyn AsrSession>>,
+    segments: Arc<Mutex<Vec<TranscriptSegment>>>,
 }
 
 impl StreamingSession {
     pub fn finish_and_wait(mut self) -> Result<String> {
+        // Grab segments before consuming the session.
+        if let Some(session) = self.inner.as_ref() {
+            if let Ok(mut guard) = self.segments.lock() {
+                *guard = session.take_segments();
+            }
+        }
         match self.inner.take() {
             Some(session) => session.finish_and_wait(),
             None => Err(anyhow!("Session already finished")),
         }
+    }
+
+    pub fn take_segments(&self) -> Vec<TranscriptSegment> {
+        self.segments.lock().map(|g| g.clone()).unwrap_or_default()
     }
 }

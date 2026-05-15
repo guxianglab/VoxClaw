@@ -118,7 +118,23 @@ pub fn run() {
             app.manage(safety_shared_state);
 
             // Initialize Services
-            let asr_service = asr::AsrService::new(asr::build_provider(&config.asr, &config.proxy));
+            let asr_service = match asr::build_provider(&config.asr, &config.proxy) {
+                Ok(provider) => {
+                    println!("[ASR] Provider initialized: {}", provider.name());
+                    asr::AsrService::new(provider)
+                }
+                Err(err) => {
+                    eprintln!("[ASR] Provider init failed: {err}");
+                    eprintln!("[ASR] Application will continue but ASR will not work until provider is properly configured.");
+                    // Fall back to Volcengine as a best-effort so the app doesn't crash.
+                    // The frontend should check and display the error to the user.
+                    let fallback = asr::volcengine::VolcengineProvider::new(
+                        config.asr.volcengine.clone(),
+                        config.proxy.clone(),
+                    );
+                    asr::AsrService::new(Arc::new(fallback))
+                }
+            };
             let mut audio_service = audio::AudioService::new();
 
             // Try to initialize with configured device, fallback to default if it fails

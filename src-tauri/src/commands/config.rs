@@ -32,7 +32,13 @@ pub fn save_config(
     let asr_changed = !asr_config_eq(&previous.asr, &config.asr)
         || !proxy_config_eq(&previous.proxy, &config.proxy);
     if asr_changed {
-        asr.replace(crate::asr::build_provider(&config.asr, &config.proxy));
+        match crate::asr::build_provider(&config.asr, &config.proxy) {
+            Ok(provider) => asr.replace(provider),
+            Err(err) => {
+                eprintln!("[CONFIG] ASR provider rebuild failed: {err}");
+                return Err(err.to_string());
+            }
+        }
     }
 
     state.save_config(&config).map_err(|e| e.to_string())
