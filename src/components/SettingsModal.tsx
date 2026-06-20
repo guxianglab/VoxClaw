@@ -85,6 +85,7 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
   const [showWarning, setShowWarning] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [saveOk, setSaveOk] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<SettingsTab>("audio");
   const [modelDownload, setModelDownload] = useState<{
     active: boolean;
@@ -105,8 +106,14 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
         try {
           await api.saveConfig(finalConfig);
           setSaveOk(true);
+          setSaveError(null);
           window.setTimeout(() => setSaveOk(false), 1500);
         } catch (error) {
+          // Surface the backend error (e.g. engine switch blocked by an active
+          // session, or ONNX Runtime refusing to re-init) instead of silently
+          // keeping the old provider. The config was NOT persisted in that case.
+          const msg = error instanceof Error ? error.message : String(error);
+          setSaveError(msg);
           console.error("save config failed", error);
         }
       }
@@ -156,6 +163,7 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
     const unsub = events.onConfigUpdated((nextConfig) => {
       pendingRef.current = null;
       setIsSaving(false);
+      setSaveError(null);
       setConfig(nextConfig);
       setLlmResult(null);
     });
@@ -514,7 +522,13 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
     onClose();
   };
 
-  const saveText = isSaving ? "正在保存..." : saveOk ? "已保存" : "自动保存";
+  const saveText = isSaving
+    ? "正在保存..."
+    : saveError
+      ? "保存失败，请查看提示"
+      : saveOk
+        ? "已保存"
+        : "自动保存";
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-neutral-950/20 p-4 backdrop-blur-sm" onClick={close}>
@@ -523,15 +537,24 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-neutral-200 px-6 py-5">
-          <div>
+          <div className="min-w-0">
             <h2 className="text-xl font-semibold text-neutral-900">{isFirstSetup ? "完成设置" : "设置"}</h2>
-            <div className="mt-1 text-sm text-neutral-500">
+            <div
+              className={`mt-1 text-sm ${
+                saveError ? "text-red-600" : "text-neutral-500"
+              }`}
+            >
               {isFirstSetup ? "先配置麦克风和模型服务" : saveText}
             </div>
+            {saveError && !isFirstSetup && (
+              <div className="mt-2 max-w-xl text-xs leading-relaxed text-red-600">
+                {saveError}
+              </div>
+            )}
           </div>
           <button
             onClick={close}
-            className="inline-flex h-10 w-10 items-center justify-center text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-700"
+            className="inline-flex h-10 w-10 shrink-0 items-center justify-center text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-700"
           >
             <X className="h-5 w-5" />
           </button>

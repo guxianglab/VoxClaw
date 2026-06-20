@@ -110,9 +110,33 @@ fn init_ort_runtime() -> Result<()> {
         )
     })?;
 
-    ort::init_from(&dll_path)
+    // `init_from(...).commit()` configures ort's *global*, process-wide
+    // environment. ort backs this with an internal `OnceLock`: once any
+    // `commit()` has succeeded, the dylib pointer is frozen for the lifetime
+    // of the process and every later `commit()` is a no-op that returns
+    // `false`.
+    //
+    // Consequences we rely on:
+    //   - GPU/DirectML selection must NOT live here (it can't be reconfigured
+    //     after the first commit). It is set per-`Session` in `try_new`.
+    //   - We honor `commit()`'s return value. `ensure_ort_runtime` only calls
+    //     us from the `NotInitialized`/`Failed` states, so a `false` here means
+    //     the global env was already committed by a *prior* attempt (e.g. the
+    //     dylib loaded but a later step failed). The frozen DLL may be the one
+    //     we wanted, or a stale one — either way we cannot (re)configure it,
+    //     so we surface a clear "restart the app" error instead of building
+    //     sessions on top of an env we didn't set up, which crashes the
+    //     process (the original "闪退").
+    let committed = ort::init_from(&dll_path)
         .map_err(|err| anyhow!("load ONNX Runtime from {}: {err}", dll_path.display()))?
         .commit();
+
+    if !committed {
+        return Err(anyhow!(
+            "ONNX Runtime 环境已被更早的初始化占用，无法切换 DLL（{}）。请重启应用后再试。",
+            dll_path.display()
+        ));
+    }
 
     Ok(())
 }

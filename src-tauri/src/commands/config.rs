@@ -28,12 +28,20 @@ pub fn save_config(
         .enable_alt
         .store(config.trigger_toggle, std::sync::atomic::Ordering::Relaxed);
 
-    // Rebuild ASR provider if relevant config changed.
+    // Rebuild ASR provider if relevant config changed. We build+replace BEFORE
+    // persisting so that a failure (e.g. lock held by an active session, or ONNX
+    // Runtime refusing to re-init) leaves the on-disk config untouched — the UI
+    // and the persisted state stay consistent, and the user gets a real error.
     let asr_changed = !asr_config_eq(&previous.asr, &config.asr)
         || !proxy_config_eq(&previous.proxy, &config.proxy);
     if asr_changed {
         match crate::asr::build_provider(&config.asr, &config.proxy) {
-            Ok(provider) => asr.replace(provider),
+            Ok(provider) => {
+                if let Err(err) = asr.replace(provider) {
+                    eprintln!("[CONFIG] ASR provider replace failed: {err}");
+                    return Err(err.to_string());
+                }
+            }
             Err(err) => {
                 eprintln!("[CONFIG] ASR provider rebuild failed: {err}");
                 return Err(err.to_string());

@@ -103,7 +103,11 @@ impl AsrService {
         }
     }
 
-    pub fn replace(&self, provider: Arc<dyn AsrProvider>) {
+    /// Replace the active provider. Returns an error if the lock stays
+    /// contended (an ASR session — dictation or meeting — is still running),
+    /// so callers can surface it to the user instead of silently keeping the
+    /// old provider. This is what made "switch engine" appear to no-op.
+    pub fn replace(&self, provider: Arc<dyn AsrProvider>) -> Result<()> {
         let name = provider.name();
         // Retry a few times if the lock is contended by an active session.
         for attempt in 1..=5 {
@@ -112,22 +116,22 @@ impl AsrService {
                     let old = guard.name();
                     *guard = provider;
                     println!("[ASR] Provider replaced: {} -> {} (attempt {})", old, name, attempt);
-                    return;
+                    return Ok(());
                 }
                 Err(std::sync::TryLockError::WouldBlock) => {
                     if attempt < 5 {
                         eprintln!("[ASR] Provider replace attempt {} blocked (active session?), retrying...", attempt);
                         std::thread::sleep(std::time::Duration::from_millis(200));
-                    } else {
-                        eprintln!("[ASR] Provider replace FAILED after 5 attempts — lock still held. New provider '{}' NOT applied.", name);
                     }
                 }
                 Err(std::sync::TryLockError::Poisoned(e)) => {
-                    eprintln!("[ASR] Provider replace FAILED — RwLock poisoned: {}", e);
-                    return;
+                    return Err(anyhow!("ASR 服务锁损坏，无法切换引擎: {}", e));
                 }
             }
         }
+        Err(anyhow!(
+            "无法切换引擎：当前仍有录音/会议会话占用 ASR 服务（重试 5 次均被阻塞）。请先停止录音或结束会议，再切换引擎。"
+        ))
     }
 
     pub fn current(&self) -> Arc<dyn AsrProvider> {

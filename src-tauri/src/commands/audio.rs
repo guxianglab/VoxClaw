@@ -67,7 +67,13 @@ pub async fn download_sensevoice_model<R: Runtime>(
         config.asr.provider,
         crate::storage::AsrProviderKind::SenseVoiceOnnx
     ) {
-        asr.replace(crate::asr::build_provider(&config.asr, &config.proxy).map_err(|e| e.to_string())?);
+        let provider = crate::asr::build_provider(&config.asr, &config.proxy)
+            .map_err(|e| e.to_string())?;
+        asr.replace(provider).map_err(|e| {
+            format!(
+                "{e}\n模型已下载并保存，但未能立即加载。请停止录音/会议后重试，或重启应用。"
+            )
+        })?;
     }
 
     Ok(final_dir.display().to_string())
