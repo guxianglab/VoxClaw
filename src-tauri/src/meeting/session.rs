@@ -297,7 +297,7 @@ fn vad_min_silence_ms(config: &crate::storage::AppConfig) -> u32 {
     if v > 0 {
         v
     } else {
-        500
+        1500
     }
 }
 

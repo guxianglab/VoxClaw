@@ -37,6 +37,11 @@ pub struct VadSegment {
 pub struct VadEndpointerConfig {
     pub threshold: f32,
     pub min_silence_samples: u64,
+    /// Minimum speech length before a silence-triggered split is allowed.
+    /// Shorter segments keep accumulating even through brief silences, so
+    /// SenseVoice always gets enough context. A segment shorter than this is
+    /// only split by `max_segment_samples` (hard cap).
+    pub min_speech_samples: u64,
     pub speech_pad_samples: u64,
     pub max_segment_samples: u64,
 }
@@ -45,22 +50,21 @@ impl Default for VadEndpointerConfig {
     fn default() -> Self {
         // 16 kHz constants, tuned for continuous speech (meetings/lectures).
         //
-        // Over-segmentation (splitting one sentence into many fragments) hurts
-        // ASR accuracy badly: each fragment loses the surrounding context, so
-        // word boundaries get misrecognized (e.g. "举头" → "去的" + "头望").
-        // To avoid this we require a long, confident silence before splitting:
-        //
-        //   min_silence 2000 ms = 32000 samples — only real pauses (sentence/
-        //     paragraph breaks, not breaths or short phrase-end pauses) split.
-        //     Natural breaths/换气 are typically 200-800 ms, well below this.
-        //   speech_pad 300 ms = 4800 samples — keep a little silence at each
-        //     segment edge so the trailing word isn't clipped.
-        //   threshold 0.5 — standard Silero default; balanced sensitivity.
-        //   max_segment 30 s = 480000 samples — hard cap to stay in the
-        //     SenseVoice comfort zone even with no silence.
+        // Two-layer anti-fragmentation strategy:
+        //   1. min_speech 8 s = 128000 samples — a segment must be at least
+        //      this long before a silence can end it. Below this, brief pauses
+        //      (breaths, thinking pauses, commas) are absorbed into the segment.
+        //      This guarantees SenseVoice always has multi-sentence context.
+        //   2. min_silence 1500 ms = 24000 samples — once a segment is long
+        //      enough, a silence this long ends it (real paragraph break).
+        //   speech_pad 300 ms = 4800 samples — pad each edge so words aren't
+        //     clipped.
+        //   threshold 0.5 — standard Silero default.
+        //   max_segment 30 s = 480000 samples — hard cap regardless of silence.
         Self {
             threshold: 0.5,
-            min_silence_samples: 32_000,
+            min_silence_samples: 24_000,
+            min_speech_samples: 128_000,
             speech_pad_samples: 4_800,
             max_segment_samples: 480_000,
         }
@@ -160,10 +164,14 @@ impl<F: FnMut(&[f32]) -> f32> VadEndpointer<F> {
         self.total_seen += chunk_len;
 
         if self.in_speech {
-            // Force-split if segment grew too long.
+            // Force-split if segment grew too long (hard cap).
             if self.current_segment.len() as u64 >= self.cfg.max_segment_samples {
                 out.push(self.finalize_segment());
-            } else if self.silence_run >= self.cfg.min_silence_samples {
+            } else if self.silence_run >= self.cfg.min_silence_samples
+                // Only end a segment on silence if it's already long enough;
+                // otherwise absorb the pause and keep accumulating for context.
+                && self.current_segment.len() as u64 >= self.cfg.min_speech_samples
+            {
                 out.push(self.finalize_segment());
             }
         }
@@ -363,6 +371,7 @@ mod tests {
             VadEndpointerConfig {
                 // Tiny values so tests don't need huge buffers.
                 min_silence_samples: 512,  // 1 silent chunk triggers split
+                min_speech_samples: 0,     // no min-length gating in tests
                 speech_pad_samples: 0,     // disable padding for predictability
                 max_segment_samples: 2_048, // 4 chunks
                 threshold: 0.5,

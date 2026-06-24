@@ -126,8 +126,16 @@ fn process_segment(
     seg: &VadSegment,
     on_segment: &impl Fn(&str),
 ) {
+    let dur_ms = (seg.samples.len() as f64 / TARGET_SR as f64 * 1000.0) as u64;
+    println!(
+        "[MEETING] segment: samples={}, duration={:.1}s, offset={:.1}s",
+        seg.samples.len(),
+        dur_ms as f64 / 1000.0,
+        seg.start_sample as f64 / TARGET_SR as f64,
+    );
     match provider.transcribe_segment(&seg.samples) {
         Ok(text) => {
+            println!("[MEETING] segment text: {:?}", text);
             acc.push(seg, &text);
             on_segment(&acc.full_text.clone());
         }
