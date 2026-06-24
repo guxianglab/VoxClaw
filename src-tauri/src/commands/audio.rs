@@ -87,6 +87,39 @@ fn sensevoice_default_dir<R: Runtime>(app: &AppHandle<R>) -> Result<std::path::P
     Ok(base.join("models").join("SenseVoiceSmall-onnx"))
 }
 
+/// Check whether the Silero VAD model exists under the given SenseVoice
+/// model dir (`<model_dir>/vad/silero_vad.onnx`).
+#[tauri::command]
+pub fn check_vad_model_present(model_dir: String) -> bool {
+    if model_dir.is_empty() {
+        return false;
+    }
+    crate::asr::sensevoice::model::is_vad_present(std::path::Path::new(&model_dir))
+}
+
+/// Download the Silero VAD model into `<model_dir>/vad/`. Emits
+/// `asr_model_download` progress events (reuses the SenseVoice download UI).
+/// Returns the `vad/` directory path.
+#[tauri::command]
+pub async fn download_vad_model<R: Runtime>(
+    app: AppHandle<R>,
+    model_dir: String,
+    storage: tauri::State<'_, StorageState>,
+) -> Result<String, String> {
+    if model_dir.is_empty() {
+        return Err("model_dir is empty".into());
+    }
+    let proxy = storage.load_config().proxy;
+    let dir = crate::asr::sensevoice::download::download_vad_model(
+        &app,
+        std::path::PathBuf::from(&model_dir),
+        proxy,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(dir.display().to_string())
+}
+
 #[tauri::command]
 pub fn get_input_devices() -> Vec<audio::AudioDevice> {
     audio::AudioService::get_input_devices()
