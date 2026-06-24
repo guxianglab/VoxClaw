@@ -218,6 +218,35 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
     }
   }, [config, saveLater]);
 
+  const handleDownloadVad = useCallback(async () => {
+    if (!config) return;
+    // VAD model lives under the SenseVoice model_dir; use the default if blank.
+    setModelDownload({ active: true, file: "", progress: 0, error: null });
+    try {
+      let dir = config.asr.sensevoice.model_dir;
+      if (!dir) {
+        dir = await api.getSenseVoiceDefaultDir();
+        const next = {
+          ...config,
+          asr: {
+            ...config.asr,
+            sensevoice: { ...config.asr.sensevoice, model_dir: dir },
+          },
+        };
+        setConfig(next);
+        saveLater(next);
+      }
+      await api.downloadVadModel(dir);
+    } catch (e) {
+      setModelDownload({
+        active: false,
+        file: "",
+        progress: 0,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }, [config, saveLater]);
+
   if (!isOpen || !config) return null;
 
   const updateConfig = <K extends keyof AppConfig>(key: K, value: AppConfig[K]) => {
@@ -785,6 +814,26 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
                           />
                         </div>
                       )}
+
+                      {/* VAD model — required for meeting mode (segmented inference) */}
+                      <div className="mt-5 border-t border-neutral-100 pt-4">
+                        <div className="mb-3 rounded-md bg-neutral-100 px-4 py-3 text-sm text-neutral-500">
+                          VAD 模型 · 会议模式必需，用于语音分段，首次使用需下载 ~2 MB
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <PrimaryButton
+                            onClick={handleDownloadVad}
+                            disabled={modelDownload.active}
+                          >
+                            {modelDownload.active ? "下载中…" : "下载 VAD 模型"}
+                          </PrimaryButton>
+                          {!modelDownload.active && modelDownload.error && (
+                            <span className="truncate text-xs text-red-500">
+                              {modelDownload.error}
+                            </span>
+                          )}
+                        </div>
+                      </div>
                     </>
                   )}
                 </Section>

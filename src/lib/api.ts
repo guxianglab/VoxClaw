@@ -58,6 +58,10 @@ export interface SenseVoiceOnnxConfig {
     model_dir: string;
     language: string;
     use_gpu: boolean;
+    /** VAD speech-probability threshold (0 = use pipeline default 0.5). */
+    vad_threshold: number;
+    /** Min trailing silence (ms) ending a segment (0 = default 500). */
+    vad_min_silence_ms: number;
 }
 
 export interface AsrConfig {
@@ -265,6 +269,10 @@ export const api = {
         invoke<boolean>("check_sensevoice_model_present", { modelDir }),
     downloadSenseVoiceModel: (modelDir?: string) =>
         invoke<string>("download_sensevoice_model", { modelDir: modelDir ?? null }),
+    checkVadModelPresent: (modelDir: string) =>
+        invoke<boolean>("check_vad_model_present", { modelDir }),
+    downloadVadModel: (modelDir: string) =>
+        invoke<string>("download_vad_model", { modelDir }),
     getInputDevices: () => invoke<AudioDevice[]>("get_input_devices"),
     getCurrentInputDevice: () => invoke<string>("get_current_input_device"),
     switchInputDevice: (deviceId: string) => invoke("switch_input_device", { deviceId }),
