@@ -14,7 +14,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use anyhow::{anyhow, Result};
-use ndarray::Array2;
+use ndarray::{Array2, Array3};
 use ort::{
     ep::directml::DirectML,
     session::{builder::GraphOptimizationLevel, Session},
@@ -193,15 +193,15 @@ pub struct SileroVad {
 }
 
 struct VadState {
-    h: Array2<f32>, // [2, 1, 64] stored flattened as [2, 64]
-    c: Array2<f32>,
+    h: Array3<f32>, // [2, 1, 64] — matches the model's expected rank-3 input
+    c: Array3<f32>,
 }
 
 impl VadState {
     fn new() -> Self {
         Self {
-            h: Array2::zeros((2, 64)),
-            c: Array2::zeros((2, 64)),
+            h: Array3::zeros((2, 1, 64)),
+            c: Array3::zeros((2, 1, 64)),
         }
     }
 }
@@ -277,8 +277,8 @@ impl SileroVad {
 
         // Collect outputs by name. The model returns prob, new_h, new_c.
         let mut prob: f32 = 0.0;
-        let mut new_h: Option<Array2<f32>> = None;
-        let mut new_c: Option<Array2<f32>> = None;
+        let mut new_h: Option<Array3<f32>> = None;
+        let mut new_c: Option<Array3<f32>> = None;
         for (name, value) in outputs.iter() {
             let arr = match value.try_extract_array::<f32>() {
                 Ok(a) => a,
@@ -292,10 +292,19 @@ impl SileroVad {
                         .unwrap_or(0.0);
                 }
                 "new_h" => {
-                    new_h = Some(arr.to_owned().into_shape((2, 64)).ok().unwrap_or_else(|| Array2::zeros((2, 64))));
+                    // Output shape is [2, 1, 64]; keep it 3D for the next call.
+                    new_h = Some(
+                        arr.to_owned()
+                            .into_shape_with_order((2, 1, 64))
+                            .unwrap_or_else(|_| Array3::zeros((2, 1, 64))),
+                    );
                 }
                 "new_c" => {
-                    new_c = Some(arr.to_owned().into_shape((2, 64)).ok().unwrap_or_else(|| Array2::zeros((2, 64))));
+                    new_c = Some(
+                        arr.to_owned()
+                            .into_shape_with_order((2, 1, 64))
+                            .unwrap_or_else(|_| Array3::zeros((2, 1, 64))),
+                    );
                 }
                 _ => {}
             }
