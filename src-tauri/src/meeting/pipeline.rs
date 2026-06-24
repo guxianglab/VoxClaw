@@ -106,6 +106,7 @@ pub fn run_pipeline(
     // segment's own boundaries.
     let overlap_samples = OVERLAP_MS * TARGET_SR as usize / 1000;
     let mut prev_tail: Vec<f32> = Vec::new();
+    let mut prev_text = String::new();
 
     while let Ok(chunk) = audio_rx.recv() {
         let mono_16k = match resampler.as_mut() {
@@ -114,32 +115,33 @@ pub fn run_pipeline(
         };
         let completed = endpointer.feed(&mono_16k);
         for seg in completed {
-            process_segment(
+            let seg_text = process_segment(
                 &provider,
                 &mut acc,
                 &seg,
                 &on_segment,
                 &prev_tail,
-                overlap_samples,
+                &prev_text,
             );
-            // Save this segment's tail for the next segment's overlap context.
+            // Save this segment's tail + text for the next segment's overlap.
             if seg.samples.len() >= overlap_samples {
                 prev_tail = seg.samples[seg.samples.len() - overlap_samples..].to_vec();
             } else {
                 prev_tail = seg.samples.clone();
             }
+            prev_text = seg_text;
         }
     }
 
     // EOF: flush the final in-progress segment.
     for seg in endpointer.flush() {
-        process_segment(
+        let _ = process_segment(
             &provider,
             &mut acc,
             &seg,
             &on_segment,
             &prev_tail,
-            overlap_samples,
+            &prev_text,
         );
     }
 
@@ -154,14 +156,16 @@ pub fn run_pipeline(
 /// short enough to not skew recognition of the current segment.
 const OVERLAP_MS: usize = 1500;
 
+/// Transcribe one segment with overlap context, dedup repeated words caused by
+/// the overlap, and accumulate the result. Returns the (deduped) segment text.
 fn process_segment(
     provider: &SenseVoiceProvider,
     acc: &mut SegmentAccumulator,
     seg: &VadSegment,
     on_segment: &impl Fn(&str),
     prev_tail: &[f32],
-    overlap_samples: usize,
-) {
+    prev_text: &str,
+) -> String {
     let dur_ms = (seg.samples.len() as f64 / TARGET_SR as f64 * 1000.0) as u64;
     println!(
         "[MEETING] segment: samples={}, duration={:.1}s, offset={:.1}s, overlap={}",
@@ -171,26 +175,76 @@ fn process_segment(
         prev_tail.len(),
     );
 
-    // Build inference input: [prev_tail (context)] + [segment audio].
+    // Build inference input: [prev_tail (overlap context)] + [segment audio].
+    let has_overlap = !prev_tail.is_empty();
     let mut infer_input = Vec::with_capacity(prev_tail.len() + seg.samples.len());
-    infer_input.extend_from_slice(prev_tail);
+    if has_overlap {
+        infer_input.extend_from_slice(prev_tail);
+    }
     infer_input.extend_from_slice(&seg.samples);
 
     match provider.transcribe_segment(&infer_input) {
-        Ok(text) => {
-            // SenseVoice may transcribe the overlap context as extra words at
-            // the start. Strip them: find where the current segment's text
-            // begins by comparing against a non-overlap transcription only when
-            // the overlap produced duplicate leading text. For now we keep the
-            // full text — leading-context words are usually benign and the
-            // bigger win is boundary recovery.
+        Ok(raw_text) => {
+            // The overlap context may produce duplicated leading text (the
+            // model transcribes the same tail audio again, often slightly
+            // differently — e.g. "流水线" vs "沦现"). Strip it so the final
+            // transcript doesn't stutter at boundaries.
+            let text = if has_overlap {
+                dedup_overlap(&raw_text, prev_text)
+            } else {
+                raw_text
+            };
             println!("[MEETING] segment text: {:?}", text);
             acc.push(seg, &text);
             on_segment(&acc.full_text.clone());
+            text
         }
         Err(e) => {
             eprintln!("[MEETING] segment inference failed: {e}; skipping segment");
+            String::new()
         }
+    }
+}
+
+/// Remove the leading portion of `current` that overlaps with the tail of
+/// `prev_text`.
+///
+/// When overlap context is prepended, SenseVoice transcribes that context
+/// again at the start of `current`. This often differs slightly from how it
+/// was transcribed at the end of the previous segment (different surrounding
+/// context), creating a duplicate-but-garbled leading word. We detect the
+/// overlap by finding the longest suffix of `prev_text` that matches a prefix
+/// of `current` (character-level), and strip it.
+fn dedup_overlap(current: &str, prev_text: &str) -> String {
+    let prev_chars: Vec<char> = prev_text.chars().collect();
+    let curr_chars: Vec<char> = current.chars().collect();
+    if prev_chars.is_empty() || curr_chars.is_empty() {
+        return current.to_string();
+    }
+
+    // How many leading characters of `current` could plausibly be overlap?
+    // The overlap audio is ~1.5s of speech; that's typically 4-8 characters.
+    // Require at least 3 matching characters so a coincidental short repeat
+    // (e.g. "代码" appearing in both segments for unrelated reasons) isn't
+    // stripped. Cap the search at 12 to avoid over-stripping.
+    let max_overlap = curr_chars.len().min(12).min(prev_chars.len());
+    const MIN_MATCH: usize = 3;
+
+    // Find the longest suffix-of-prev that equals a prefix-of-current.
+    let mut best_len = 0usize;
+    for len in (MIN_MATCH..=max_overlap).rev() {
+        let prev_suffix = &prev_chars[prev_chars.len() - len..];
+        let curr_prefix = &curr_chars[..len];
+        if prev_suffix == curr_prefix {
+            best_len = len;
+            break;
+        }
+    }
+
+    if best_len > 0 {
+        curr_chars[best_len..].iter().collect::<String>().trim_start().to_string()
+    } else {
+        current.to_string()
     }
 }
 
@@ -280,6 +334,26 @@ mod tests {
         acc.push(&s, "");
         assert_eq!(acc.full_text, "");
         assert!(acc.segments.is_empty());
+    }
+
+    #[test]
+    fn dedup_strips_repeated_overlap_word() {
+        // prev ended with "流水线", current (with overlap) starts with it.
+        let out = dedup_overlap("流水线迎来可能不是", "接入研发流水线");
+        assert_eq!(out, "迎来可能不是");
+    }
+
+    #[test]
+    fn dedup_keeps_short_legitimate_repeat() {
+        // "代码" legitimately appears in both but is NOT overlap duplication
+        // (too short to be from the 1.5s overlap audio). Must be kept.
+        let out = dedup_overlap("代码是资产", "讨论代码");
+        assert_eq!(out, "代码是资产");
+    }
+
+    #[test]
+    fn dedup_handles_empty_prev() {
+        assert_eq!(dedup_overlap("hello", ""), "hello");
     }
 
     /// Regression for the original bug: a 20-30 minute recording must NOT hang.
