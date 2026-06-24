@@ -43,13 +43,25 @@ pub struct VadEndpointerConfig {
 
 impl Default for VadEndpointerConfig {
     fn default() -> Self {
-        // 16 kHz constants.
-        // min_silence 500 ms = 8000 samples; speech_pad 200 ms = 3200 samples;
-        // max_segment 30 s = 480000 samples.
+        // 16 kHz constants, tuned for continuous speech (meetings/lectures).
+        //
+        // Over-segmentation (splitting one sentence into many fragments) hurts
+        // ASR accuracy badly: each fragment loses the surrounding context, so
+        // word boundaries get misrecognized (e.g. "举头" → "去的" + "头望").
+        // To avoid this we require a long, confident silence before splitting:
+        //
+        //   min_silence 2000 ms = 32000 samples — only real pauses (sentence/
+        //     paragraph breaks, not breaths or short phrase-end pauses) split.
+        //     Natural breaths/换气 are typically 200-800 ms, well below this.
+        //   speech_pad 300 ms = 4800 samples — keep a little silence at each
+        //     segment edge so the trailing word isn't clipped.
+        //   threshold 0.5 — standard Silero default; balanced sensitivity.
+        //   max_segment 30 s = 480000 samples — hard cap to stay in the
+        //     SenseVoice comfort zone even with no silence.
         Self {
             threshold: 0.5,
-            min_silence_samples: 8_000,
-            speech_pad_samples: 3_200,
+            min_silence_samples: 32_000,
+            speech_pad_samples: 4_800,
             max_segment_samples: 480_000,
         }
     }
