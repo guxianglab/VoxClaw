@@ -35,7 +35,7 @@ pub enum DownloadEvent {
     Failed { message: String },
 }
 
-fn emit<R: Runtime>(app: &AppHandle<R>, event: DownloadEvent) {
+pub(crate) fn emit<R: Runtime>(app: &AppHandle<R>, event: DownloadEvent) {
     let _ = app.emit("asr_model_download", &event);
 }
 

@@ -481,6 +481,8 @@ pub fn run() {
             commands::download_sensevoice_model,
             commands::check_vad_model_present,
             commands::download_vad_model,
+            commands::check_zipformer_model_present,
+            commands::download_zipformer_model,
             commands::get_input_devices,
             commands::get_current_input_device,
             commands::switch_input_device,

@@ -17,6 +17,12 @@ pub fn get_asr_status(state: tauri::State<StorageState>) -> Result<crate::state:
                     &config.asr.sensevoice.model_dir,
                 ))
         }
+        crate::storage::AsrProviderKind::ZipformerStreaming => {
+            !config.asr.zipformer.model_dir.is_empty()
+                && crate::asr::zipformer::model::is_present(std::path::Path::new(
+                    &config.asr.zipformer.model_dir,
+                ))
+        }
     };
     Ok(crate::state::AsrStatus { configured })
 }
@@ -95,6 +101,43 @@ pub fn check_vad_model_present(model_dir: String) -> bool {
         return false;
     }
     crate::asr::sensevoice::model::is_vad_present(std::path::Path::new(&model_dir))
+}
+
+/// Check whether the Zipformer streaming model exists under the given dir.
+#[tauri::command]
+pub fn check_zipformer_model_present(model_dir: String) -> bool {
+    if model_dir.is_empty() {
+        return false;
+    }
+    crate::asr::zipformer::model::is_present(std::path::Path::new(&model_dir))
+}
+
+/// Default parent directory for the Zipformer model.
+fn zipformer_default_parent_dir<R: Runtime>(app: &AppHandle<R>) -> Result<std::path::PathBuf, String> {
+    let base = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("locate app_data_dir failed: {e}"))?;
+    Ok(base.join("models"))
+}
+
+/// Download and extract the streaming Zipformer model. Emits
+/// `asr_model_download` progress events. Returns the model directory path.
+#[tauri::command]
+pub async fn download_zipformer_model<R: Runtime>(
+    app: AppHandle<R>,
+    model_dir: Option<String>,
+    storage: tauri::State<'_, StorageState>,
+) -> Result<String, String> {
+    let parent = match model_dir {
+        Some(d) if !d.is_empty() => std::path::PathBuf::from(d),
+        _ => zipformer_default_parent_dir(&app)?,
+    };
+    let proxy = storage.load_config().proxy;
+    let dir = crate::asr::zipformer::download::download_zipformer_model(&app, parent, proxy)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(dir.display().to_string())
 }
 
 /// Download the Silero VAD model into `<model_dir>/vad/`. Emits

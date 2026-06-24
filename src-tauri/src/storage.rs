@@ -464,6 +464,8 @@ pub enum AsrProviderKind {
     #[default]
     Volcengine,
     SenseVoiceOnnx,
+    /// sherpa-onnx Streaming Zipformer — offline streaming ASR for meetings.
+    ZipformerStreaming,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -504,6 +506,39 @@ fn default_vad_min_silence_ms() -> u32 {
     500
 }
 
+/// Configuration for the sherpa-onnx Streaming Zipformer engine.
+///
+/// The model is a transducer triad: encoder + decoder + joiner, plus a tokens
+/// file. All four live under `model_dir`. See the streaming-zipformer-bilingual
+/// pretrained model from k2-fsa.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ZipformerStreamingConfig {
+    /// Directory holding encoder/decoder/joiner .onnx + tokens.txt.
+    #[serde(default)]
+    pub model_dir: String,
+    /// Enable the engine's built-in endpoint detector (sentence boundaries).
+    /// Should stay `true` for meeting use.
+    #[serde(default = "default_zipformer_enable_endpoint")]
+    pub enable_endpoint: bool,
+    /// Decode on GPU via ONNX Runtime DirectML when available.
+    #[serde(default)]
+    pub use_gpu: bool,
+}
+
+impl Default for ZipformerStreamingConfig {
+    fn default() -> Self {
+        Self {
+            model_dir: String::new(),
+            enable_endpoint: true,
+            use_gpu: false,
+        }
+    }
+}
+
+fn default_zipformer_enable_endpoint() -> bool {
+    true
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct AsrConfig {
     #[serde(default)]
@@ -512,6 +547,8 @@ pub struct AsrConfig {
     pub volcengine: OnlineAsrConfig,
     #[serde(default)]
     pub sensevoice: SenseVoiceOnnxConfig,
+    #[serde(default)]
+    pub zipformer: ZipformerStreamingConfig,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
@@ -672,6 +709,7 @@ impl Default for AppConfig {
                     resource_id: "volc.bigasr.sauc.duration".to_string(),
                 },
                 sensevoice: SenseVoiceOnnxConfig::default(),
+                zipformer: ZipformerStreamingConfig::default(),
             },
             input_device: String::new(),
             llm_config: LlmConfig::default(),
@@ -1062,6 +1100,7 @@ fn recover_app_config_from_object(
             provider: AsrProviderKind::Volcengine,
             volcengine: legacy,
             sensevoice: SenseVoiceOnnxConfig::default(),
+            zipformer: ZipformerStreamingConfig::default(),
         }
     } else {
         AsrConfig::default()

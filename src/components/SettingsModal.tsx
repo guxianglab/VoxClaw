@@ -93,9 +93,10 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
     progress: number;
     error: string | null;
   }>({ active: false, file: "", progress: 0, error: null });
-  // SenseVoice / VAD model presence, checked on open + after downloads finish.
+  // SenseVoice / VAD / Zipformer model presence, checked on open + after downloads finish.
   const [svPresent, setSvPresent] = useState<boolean | null>(null);
   const [vadPresent, setVadPresent] = useState<boolean | null>(null);
+  const [zfPresent, setZfPresent] = useState<boolean | null>(null);
   const timerRef = useRef<number | null>(null);
   const pendingRef = useRef<AppConfig | null>(null);
 
@@ -212,6 +213,13 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
       ]);
       setSvPresent(sv);
       setVadPresent(vad);
+      // Zipformer model lives in its own directory.
+      const zfDir = config?.asr.zipformer.model_dir;
+      if (zfDir) {
+        setZfPresent(await api.checkZipformerModelPresent(zfDir));
+      } else {
+        setZfPresent(false);
+      }
     } catch {
       /* non-fatal: leave badges as unknown */
     }
@@ -267,6 +275,32 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
         saveLater(next);
       }
       await api.downloadVadModel(dir);
+    } catch (e) {
+      setModelDownload({
+        active: false,
+        file: "",
+        progress: 0,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }, [config, saveLater]);
+
+  const handleDownloadZipformer = useCallback(async () => {
+    if (!config) return;
+    setModelDownload({ active: true, file: "", progress: 0, error: null });
+    try {
+      const dir = await api.downloadZipformerModel(
+        config.asr.zipformer.model_dir || undefined,
+      );
+      const next = {
+        ...config,
+        asr: {
+          ...config.asr,
+          zipformer: { ...config.asr.zipformer, model_dir: dir },
+        },
+      };
+      setConfig(next);
+      saveLater(next);
     } catch (e) {
       setModelDownload({
         active: false,
@@ -716,6 +750,13 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
                         updateConfig("asr", { ...config.asr, provider: "sense_voice_onnx" })
                       }
                     />
+                    <EngineButton
+                      label="Zipformer (本地流式)"
+                      active={config.asr.provider === "zipformer_streaming"}
+                      onClick={() =>
+                        updateConfig("asr", { ...config.asr, provider: "zipformer_streaming" })
+                      }
+                    />
                   </div>
 
                   {config.asr.provider === "volcengine" && (
@@ -882,6 +923,78 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
                           )}
                         </div>
                       </div>
+                    </>
+                  )}
+
+                  {config.asr.provider === "zipformer_streaming" && (
+                    <>
+                      <div className="mb-4 rounded-md bg-neutral-100 px-4 py-3 text-sm text-neutral-500">
+                        Streaming Zipformer · 中英双语本地流式引擎，会议实时转写推荐。
+                        模型约 ~300 MB，首次使用需下载。
+                      </div>
+                      <div className="grid gap-3">
+                        <Field
+                          label="模型目录"
+                          value={config.asr.zipformer.model_dir}
+                          placeholder="留空将下载到默认位置"
+                          onChange={(value) =>
+                            updateConfig("asr", {
+                              ...config.asr,
+                              zipformer: { ...config.asr.zipformer, model_dir: value },
+                            })
+                          }
+                        />
+                        <ToggleRow
+                          title="使用 GPU"
+                          desc="启用 ONNX Runtime GPU provider (需要相应运行时)"
+                          active={config.asr.zipformer.use_gpu}
+                          onToggle={() =>
+                            updateConfig("asr", {
+                              ...config.asr,
+                              zipformer: {
+                                ...config.asr.zipformer,
+                                use_gpu: !config.asr.zipformer.use_gpu,
+                              },
+                            })
+                          }
+                        />
+                      </div>
+
+                      <div className="mt-4 flex items-center gap-3">
+                        <PrimaryButton
+                          onClick={handleDownloadZipformer}
+                          disabled={modelDownload.active}
+                        >
+                          {modelDownload.active
+                            ? "下载中…"
+                            : zfPresent
+                              ? "重新下载"
+                              : "下载模型"}
+                        </PrimaryButton>
+                        {modelDownload.active && (
+                          <span className="truncate text-xs text-neutral-500">
+                            {modelDownload.file || "正在准备…"}
+                          </span>
+                        )}
+                        {zfPresent && !modelDownload.active && (
+                          <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-700">
+                            ✓ 已下载
+                          </span>
+                        )}
+                        {!modelDownload.active && modelDownload.error && (
+                          <span className="truncate text-xs text-red-500">
+                            {modelDownload.error}
+                          </span>
+                        )}
+                      </div>
+                      {modelDownload.active && (
+                        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-neutral-200">
+                          <div
+                            className="h-full rounded-full bg-chinese-indigo transition-all"
+                            style={{ width: `${Math.round(modelDownload.progress * 100)}%` }}
+                          />
+                        </div>
+                      )}
                     </>
                   )}
                 </Section>

@@ -58,5 +58,14 @@ rubato = "0.15"
 rustfft = "6"
 hound = "3"
 
+# sherpa-onnx (streaming ASR) -------------------------------------------------
+# Uses `shared` linking (prebuilt DLLs) instead of `static` to avoid MSVC C
+# runtime symbol mismatches (__std_search_1 etc.) between the prebuilt static
+# lib and our toolchain. The build script copies the runtime DLLs next to the
+# binary automatically. Used for the streaming Zipformer meeting engine.
+sherpa-onnx = { version = "1.13", default-features = false, features = ["shared"] }
+tar = "0.4"
+bzip2 = "0.4"
+
 [dev-dependencies]
 tempfile = "3"

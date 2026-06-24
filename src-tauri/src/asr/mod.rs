@@ -15,6 +15,7 @@ use crate::storage::{AsrConfig, AsrProviderKind, ProxyConfig};
 
 pub mod volcengine;
 pub mod sensevoice;
+pub mod zipformer;
 
 // ---------------------------------------------------------------------------
 // Trait surface
@@ -86,6 +87,13 @@ pub fn build_provider(config: &AsrConfig, proxy: &ProxyConfig) -> Result<Arc<dyn
                     anyhow!(
                         "SenseVoice 离线引擎加载失败: {err}。请检查模型文件是否存在，以及 onnxruntime.dll 是否可用。"
                     )
+                })?;
+            Ok(Arc::new(provider))
+        }
+        AsrProviderKind::ZipformerStreaming => {
+            let provider =
+                zipformer::ZipformerProvider::try_new(&config.zipformer).map_err(|err| {
+                    anyhow!("Zipformer 流式引擎加载失败: {err}。请检查模型文件是否存在。")
                 })?;
             Ok(Arc::new(provider))
         }
