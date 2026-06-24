@@ -474,6 +474,14 @@ pub struct SenseVoiceOnnxConfig {
     pub language: String,
     #[serde(default)]
     pub use_gpu: bool,
+    /// VAD speech-probability threshold. `0.0` means "use the pipeline default
+    /// (0.5)". Exposed so users can tune sensitivity.
+    #[serde(default)]
+    pub vad_threshold: f32,
+    /// Minimum trailing silence (ms) that ends a speech segment. `0` means
+    /// "use the pipeline default (500 ms)".
+    #[serde(default = "default_vad_min_silence_ms")]
+    pub vad_min_silence_ms: u32,
 }
 
 impl Default for SenseVoiceOnnxConfig {
@@ -482,12 +490,18 @@ impl Default for SenseVoiceOnnxConfig {
             model_dir: String::new(),
             language: default_sensevoice_language(),
             use_gpu: false,
+            vad_threshold: 0.0,
+            vad_min_silence_ms: default_vad_min_silence_ms(),
         }
     }
 }
 
 fn default_sensevoice_language() -> String {
     "auto".to_string()
+}
+
+fn default_vad_min_silence_ms() -> u32 {
+    500
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
