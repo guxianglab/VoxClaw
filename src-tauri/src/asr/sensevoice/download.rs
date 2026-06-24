@@ -161,3 +161,111 @@ async fn download_one<R: Runtime>(
 
     Ok(())
 }
+
+// --- VAD model download ------------------------------------------------------
+
+use super::model::{VAD_MODEL_FILE, vad_subdir};
+
+/// Download the Silero VAD model into `<sensevoice_dir>/vad/silero_vad.onnx`.
+/// Idempotent: skips if a non-trivial file already exists. Emits the same
+/// `asr_model_download` events so the frontend download UI is reused.
+pub async fn download_vad_model<R: Runtime>(
+    app: &AppHandle<R>,
+    sensevoice_dir: PathBuf,
+    proxy: ProxyConfig,
+) -> Result<PathBuf> {
+    let target_dir = vad_subdir(&sensevoice_dir);
+    if !target_dir.exists() {
+        fs::create_dir_all(&target_dir)
+            .map_err(|e| anyhow!("create vad dir failed: {e}"))?;
+    }
+    let dest = target_dir.join(VAD_MODEL_FILE);
+
+    if let Ok(meta) = fs::metadata(&dest) {
+        if meta.is_file() && meta.len() > 1_000_000 {
+            emit(app, DownloadEvent::Finished {
+                dir: target_dir.display().to_string(),
+            });
+            return Ok(target_dir);
+        }
+    }
+
+    let client = crate::http_client::build_client(&proxy, 600)
+        .map_err(|e| anyhow!("build http client failed: {e}"))?;
+
+    emit(app, DownloadEvent::Started { total_files: 1 });
+
+    if let Err(err) = download_vad_one(app, &client, &dest).await {
+        emit(app, DownloadEvent::Failed {
+            message: err.to_string(),
+        });
+        return Err(err);
+    }
+
+    emit(app, DownloadEvent::Finished {
+        dir: target_dir.display().to_string(),
+    });
+    Ok(target_dir)
+}
+
+async fn download_vad_one<R: Runtime>(
+    app: &AppHandle<R>,
+    client: &reqwest::Client,
+    dest: &Path,
+) -> Result<()> {
+    // HuggingFace-hosted Silero VAD ONNX (context-prefix export, ~2 MB).
+    let url =
+        "https://huggingface.co/snakers4/silero-vad/resolve/main/src/silero_vad/data/silero_vad.onnx";
+
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| anyhow!("request vad model failed: {e}"))?;
+    if !response.status().is_success() {
+        return Err(anyhow!(
+            "download vad failed: HTTP {}",
+            response.status()
+        ));
+    }
+    let total_size = response.content_length();
+    let part_path = dest.with_extension("onnx.part");
+
+    let mut file = fs::File::create(&part_path)
+        .map_err(|e| anyhow!("create {} failed: {e}", part_path.display()))?;
+    let mut downloaded: u64 = 0;
+    let mut last_emit_at = std::time::Instant::now();
+    let mut stream = response.bytes_stream();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| anyhow!("stream vad error: {e}"))?;
+        file.write_all(&chunk)
+            .map_err(|e| anyhow!("write vad failed: {e}"))?;
+        downloaded += chunk.len() as u64;
+
+        if last_emit_at.elapsed() >= std::time::Duration::from_millis(150) {
+            emit(app, DownloadEvent::File {
+                name: VAD_MODEL_FILE.to_string(),
+                index: 1,
+                total: 1,
+                downloaded,
+                size: total_size,
+            });
+            last_emit_at = std::time::Instant::now();
+        }
+    }
+    file.flush().ok();
+    drop(file);
+
+    fs::rename(&part_path, dest).map_err(|e| anyhow!("finalize vad failed: {e}"))?;
+
+    emit(app, DownloadEvent::File {
+        name: VAD_MODEL_FILE.to_string(),
+        index: 1,
+        total: 1,
+        downloaded,
+        size: total_size,
+    });
+
+    Ok(())
+}

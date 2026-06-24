@@ -52,3 +52,28 @@ pub fn model_file(dir: &Path) -> PathBuf {
 pub fn tokens_file(dir: &Path) -> PathBuf {
     dir.join("tokens.json")
 }
+
+// --- VAD model ---------------------------------------------------------------
+// The Silero VAD model lives in a `vad/` subdirectory of a SenseVoice model
+// directory so it shares the model_dir lifetime and download UI.
+
+/// The VAD model filename inside a SenseVoice model directory's `vad/` subdir.
+pub const VAD_MODEL_FILE: &str = "silero_vad.onnx";
+
+/// Default subdirectory under a SenseVoice model dir holding the VAD model.
+pub fn vad_subdir(sensevoice_dir: &Path) -> PathBuf {
+    sensevoice_dir.join("vad")
+}
+
+pub fn vad_model_file(sensevoice_dir: &Path) -> PathBuf {
+    vad_subdir(sensevoice_dir).join(VAD_MODEL_FILE)
+}
+
+/// True iff the VAD model exists and is non-trivially sized (> ~1 MB).
+pub fn is_vad_present(sensevoice_dir: &Path) -> bool {
+    let path = vad_model_file(sensevoice_dir);
+    match std::fs::metadata(&path) {
+        Ok(meta) => meta.is_file() && meta.len() > 1_000_000,
+        Err(_) => false,
+    }
+}
