@@ -80,7 +80,15 @@ pub fn run_pipeline(
     // The endpointer's probability source calls the ONNX VAD once per chunk.
     let vad_for_ep = vad.clone();
     let mut endpointer = VadEndpointer::new(vad_cfg, move |chunk: &[f32]| {
-        vad_for_ep.process_chunk(chunk).unwrap_or(0.0)
+        match vad_for_ep.process_chunk(chunk) {
+            Ok(p) => p,
+            Err(e) => {
+                // Log once per error rather than per-chunk to avoid flooding;
+                // a failed VAD call yields prob 0 (treated as silence).
+                eprintln!("[MEETING] VAD inference error: {e}");
+                0.0
+            }
+        }
     });
 
     let mut acc = SegmentAccumulator::new();

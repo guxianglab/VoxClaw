@@ -22,8 +22,6 @@ use ort::{
 };
 
 const VAD_CHUNK: usize = 512; // 32 ms @ 16 kHz — Silero fixed frame size
-const VAD_CONTEXT: usize = 64; // prepended context for the stateless export
-const VAD_INPUT_LEN: usize = VAD_CHUNK + VAD_CONTEXT; // 576
 
 /// A completed speech segment, in the 16 kHz sample domain.
 #[derive(Clone, Debug, PartialEq)]
@@ -176,17 +174,36 @@ impl<F: FnMut(&[f32]) -> f32> VadEndpointer<F> {
     }
 }
 
-/// Hand-written Silero VAD inference over ONNX Runtime. Uses the
-/// context-prefix variant of the model (single `input` tensor of shape
-/// `[1, 576]`); cross-chunk continuity is approximated by prepending the last
-/// 64 samples of the previous chunk.
+/// Hand-written Silero VAD v4 inference over ONNX Runtime.
+///
+/// This matches the sherpa-onnx `silero_vad.onnx` export (stateful v4): the
+/// model takes an audio chunk `x [1,512]` plus the LSTM state `h [2,1,64]` and
+/// `c [2,1,64]`, and returns the speech probability plus the updated state
+/// `new_h` / `new_c`. The state is threaded chunk-to-chunk so the model has
+/// continuity across the whole stream.
 ///
 /// The global ONNX Runtime environment is initialised once by
 /// `SenseVoiceProvider::try_new` before any meeting starts, so this wrapper
 /// only creates a `Session` (which is safe to do multiple times).
 pub struct SileroVad {
     session: Mutex<Session>,
-    context: Mutex<Vec<f32>>,
+    /// LSTM hidden state h [2,1,64] and cell state c [2,1,64], updated each
+    /// call. Guarded by a mutex so the endpointer closure can borrow `&self`.
+    state: Mutex<VadState>,
+}
+
+struct VadState {
+    h: Array2<f32>, // [2, 1, 64] stored flattened as [2, 64]
+    c: Array2<f32>,
+}
+
+impl VadState {
+    fn new() -> Self {
+        Self {
+            h: Array2::zeros((2, 64)),
+            c: Array2::zeros((2, 64)),
+        }
+    }
 }
 
 impl SileroVad {
@@ -224,7 +241,7 @@ impl SileroVad {
 
         Ok(Self {
             session: Mutex::new(session),
-            context: Mutex::new(vec![0.0; VAD_CONTEXT]),
+            state: Mutex::new(VadState::new()),
         })
     }
 
@@ -238,56 +255,71 @@ impl SileroVad {
             ));
         }
 
-        // Assemble [context(64) | chunk(512)] = 576.
-        let mut input = Vec::with_capacity(VAD_INPUT_LEN);
-        {
-            let ctx = self.context.lock().map_err(|_| anyhow!("vad ctx poisoned"))?;
-            input.extend_from_slice(&ctx);
-        }
-        input.extend_from_slice(chunk);
+        // Snapshot current LSTM state, then drop the lock so we can run inference.
+        let (h_arr, c_arr) = {
+            let st = self.state.lock().map_err(|_| anyhow!("vad state poisoned"))?;
+            (st.h.clone(), st.c.clone())
+        };
 
-        // Update context for the next call: last VAD_CONTEXT samples of this chunk.
-        {
-            let mut ctx = self.context.lock().map_err(|_| anyhow!("vad ctx poisoned"))?;
-            let off = chunk.len() - VAD_CONTEXT;
-            ctx.copy_from_slice(&chunk[off..]);
-        }
-
-        let tensor_input = Array2::from_shape_vec((1, VAD_INPUT_LEN), input)
-            .map_err(|e| anyhow!("vad reshape: {e}"))?;
-        let tensor = Tensor::from_array(tensor_input).map_err(|e| anyhow!("vad input tensor: {e}"))?;
+        let x_input = Array2::from_shape_vec((1, VAD_CHUNK), chunk.to_vec())
+            .map_err(|e| anyhow!("vad x reshape: {e}"))?;
+        let x_tensor = Tensor::from_array(x_input).map_err(|e| anyhow!("vad x tensor: {e}"))?;
+        let h_tensor = Tensor::from_array(h_arr).map_err(|e| anyhow!("vad h tensor: {e}"))?;
+        let c_tensor = Tensor::from_array(c_arr).map_err(|e| anyhow!("vad c tensor: {e}"))?;
 
         let mut session = self
             .session
             .lock()
             .map_err(|_| anyhow!("vad session poisoned"))?;
         let outputs = session
-            .run(ort::inputs!["input" => tensor])
+            .run(ort::inputs!["x" => x_tensor, "h" => h_tensor, "c" => c_tensor])
             .map_err(|e| anyhow!("vad run: {e}"))?;
 
-        let (_name, value) = outputs
-            .iter()
-            .next()
-            .ok_or_else(|| anyhow!("vad: no outputs"))?;
-        let logits = value
-            .try_extract_array::<f32>()
-            .map_err(|e| anyhow!("vad extract: {e}"))?;
-        let prob = logits
-            .as_slice()
-            .ok_or_else(|| anyhow!("vad output not contiguous"))?
-            .first()
-            .copied()
-            .unwrap_or(0.0);
+        // Collect outputs by name. The model returns prob, new_h, new_c.
+        let mut prob: f32 = 0.0;
+        let mut new_h: Option<Array2<f32>> = None;
+        let mut new_c: Option<Array2<f32>> = None;
+        for (name, value) in outputs.iter() {
+            let arr = match value.try_extract_array::<f32>() {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            match name {
+                "prob" => {
+                    prob = arr
+                        .as_slice()
+                        .and_then(|s| s.first().copied())
+                        .unwrap_or(0.0);
+                }
+                "new_h" => {
+                    new_h = Some(arr.to_owned().into_shape((2, 64)).ok().unwrap_or_else(|| Array2::zeros((2, 64))));
+                }
+                "new_c" => {
+                    new_c = Some(arr.to_owned().into_shape((2, 64)).ok().unwrap_or_else(|| Array2::zeros((2, 64))));
+                }
+                _ => {}
+            }
+        }
+
+        // Persist the updated state for the next call.
+        if let (Some(h), Some(c)) = (new_h, new_c) {
+            if let Ok(mut st) = self.state.lock() {
+                st.h = h;
+                st.c = c;
+            }
+        }
+
         Ok(prob.clamp(0.0, 1.0))
     }
 
-    /// Reset the cross-chunk context (e.g. for a new session). Currently each
-    /// meeting builds a fresh `SileroVad`, so this is reserved for callers that
-    /// reuse one instance across sessions.
+    /// Reset the LSTM state to zero (e.g. for a new session). Each meeting
+    /// builds a fresh `SileroVad`, so this is reserved for callers that reuse
+    /// one instance across sessions.
     #[allow(dead_code)]
     pub fn reset(&self) {
-        if let Ok(mut ctx) = self.context.lock() {
-            ctx.fill(0.0);
+        if let Ok(mut st) = self.state.lock() {
+            st.h.fill(0.0);
+            st.c.fill(0.0);
         }
     }
 }
