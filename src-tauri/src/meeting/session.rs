@@ -46,7 +46,7 @@ pub struct ActiveMeeting {
 impl ActiveMeeting {
     /// Stop capture, join the feeder (flushing the final segment), build the
     /// persisted record.
-    pub fn stop(mut self) -> Result<MeetingRecord> {
+    pub fn stop(self) -> Result<MeetingRecord> {
         let ActiveMeeting {
             id,
             started_at_iso,

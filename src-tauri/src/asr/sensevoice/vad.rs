@@ -281,7 +281,10 @@ impl SileroVad {
         Ok(prob.clamp(0.0, 1.0))
     }
 
-    /// Reset the cross-chunk context (e.g. for a new session).
+    /// Reset the cross-chunk context (e.g. for a new session). Currently each
+    /// meeting builds a fresh `SileroVad`, so this is reserved for callers that
+    /// reuse one instance across sessions.
+    #[allow(dead_code)]
     pub fn reset(&self) {
         if let Ok(mut ctx) = self.context.lock() {
             ctx.fill(0.0);
