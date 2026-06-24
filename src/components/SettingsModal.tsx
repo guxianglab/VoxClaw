@@ -93,6 +93,9 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
     progress: number;
     error: string | null;
   }>({ active: false, file: "", progress: 0, error: null });
+  // SenseVoice / VAD model presence, checked on open + after downloads finish.
+  const [svPresent, setSvPresent] = useState<boolean | null>(null);
+  const [vadPresent, setVadPresent] = useState<boolean | null>(null);
   const timerRef = useRef<number | null>(null);
   const pendingRef = useRef<AppConfig | null>(null);
 
@@ -191,6 +194,33 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
       unsub.then((fn) => fn());
     };
   }, [isOpen]);
+
+  // Check SenseVoice + VAD model presence on open, and re-check after a
+  // download finishes (modelDownload.active flips false) so the status badge
+  // updates without reopening the modal.
+  const checkModelPresence = useCallback(async () => {
+    try {
+      let dir = "";
+      if (config?.asr.sensevoice.model_dir) {
+        dir = config.asr.sensevoice.model_dir;
+      } else {
+        dir = await api.getSenseVoiceDefaultDir();
+      }
+      const [sv, vad] = await Promise.all([
+        api.checkSenseVoiceModelPresent(dir),
+        api.checkVadModelPresent(dir),
+      ]);
+      setSvPresent(sv);
+      setVadPresent(vad);
+    } catch {
+      /* non-fatal: leave badges as unknown */
+    }
+  }, [config?.asr.sensevoice.model_dir]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    checkModelPresence();
+  }, [isOpen, checkModelPresence, modelDownload.active]);
 
   const handleDownloadSenseVoice = useCallback(async () => {
     if (!config) return;
@@ -793,11 +823,20 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
                           onClick={handleDownloadSenseVoice}
                           disabled={modelDownload.active}
                         >
-                          {modelDownload.active ? "下载中…" : "下载模型"}
+                          {modelDownload.active
+                            ? "下载中…"
+                            : svPresent
+                              ? "重新下载"
+                              : "下载模型"}
                         </PrimaryButton>
                         {modelDownload.active && (
                           <span className="truncate text-xs text-neutral-500">
                             {modelDownload.file || "正在准备…"}
+                          </span>
+                        )}
+                        {svPresent && !modelDownload.active && (
+                          <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-700">
+                            ✓ 已下载
                           </span>
                         )}
                         {!modelDownload.active && modelDownload.error && (
@@ -825,8 +864,17 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
                             onClick={handleDownloadVad}
                             disabled={modelDownload.active}
                           >
-                            {modelDownload.active ? "下载中…" : "下载 VAD 模型"}
+                            {modelDownload.active
+                              ? "下载中…"
+                              : vadPresent
+                                ? "重新下载"
+                                : "下载 VAD 模型"}
                           </PrimaryButton>
+                          {vadPresent && !modelDownload.active && (
+                            <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-700">
+                              ✓ 已下载
+                            </span>
+                          )}
                           {!modelDownload.active && modelDownload.error && (
                             <span className="truncate text-xs text-red-500">
                               {modelDownload.error}
