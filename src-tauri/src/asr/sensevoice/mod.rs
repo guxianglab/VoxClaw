@@ -9,5 +9,6 @@ pub mod download;
 pub mod fbank;
 pub mod model;
 pub mod provider;
+pub mod vad;
 
 pub use provider::SenseVoiceProvider;
