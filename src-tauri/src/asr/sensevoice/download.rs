@@ -182,7 +182,7 @@ pub async fn download_vad_model<R: Runtime>(
     let dest = target_dir.join(VAD_MODEL_FILE);
 
     if let Ok(meta) = fs::metadata(&dest) {
-        if meta.is_file() && meta.len() > 1_000_000 {
+        if meta.is_file() && meta.len() > 100_000 {
             emit(app, DownloadEvent::Finished {
                 dir: target_dir.display().to_string(),
             });

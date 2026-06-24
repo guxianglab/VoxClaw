@@ -69,11 +69,13 @@ pub fn vad_model_file(sensevoice_dir: &Path) -> PathBuf {
     vad_subdir(sensevoice_dir).join(VAD_MODEL_FILE)
 }
 
-/// True iff the VAD model exists and is non-trivially sized (> ~1 MB).
+/// True iff the VAD model exists and is non-trivially sized (> 100 KB). The
+/// sherpa-onnx silero_vad.onnx is ~640 KB, so the threshold excludes only
+/// empty/partial/corrupt files.
 pub fn is_vad_present(sensevoice_dir: &Path) -> bool {
     let path = vad_model_file(sensevoice_dir);
     match std::fs::metadata(&path) {
-        Ok(meta) => meta.is_file() && meta.len() > 1_000_000,
+        Ok(meta) => meta.is_file() && meta.len() > 100_000,
         Err(_) => false,
     }
 }
