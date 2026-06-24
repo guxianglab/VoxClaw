@@ -60,6 +60,9 @@ fn asr_config_eq(a: &crate::storage::AsrConfig, b: &crate::storage::AsrConfig) -
         && a.sensevoice.model_dir == b.sensevoice.model_dir
         && a.sensevoice.language == b.sensevoice.language
         && a.sensevoice.use_gpu == b.sensevoice.use_gpu
+        && a.zipformer.model_dir == b.zipformer.model_dir
+        && a.zipformer.enable_endpoint == b.zipformer.enable_endpoint
+        && a.zipformer.use_gpu == b.zipformer.use_gpu
 }
 
 fn proxy_config_eq(a: &crate::storage::ProxyConfig, b: &crate::storage::ProxyConfig) -> bool {

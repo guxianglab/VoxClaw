@@ -123,11 +123,14 @@ fn zipformer_default_parent_dir<R: Runtime>(app: &AppHandle<R>) -> Result<std::p
 
 /// Download and extract the streaming Zipformer model. Emits
 /// `asr_model_download` progress events. Returns the model directory path.
+/// If Zipformer is the active provider, rebuilds it so dictation picks up
+/// the model without a restart.
 #[tauri::command]
 pub async fn download_zipformer_model<R: Runtime>(
     app: AppHandle<R>,
     model_dir: Option<String>,
     storage: tauri::State<'_, StorageState>,
+    asr: tauri::State<'_, crate::state::AsrState>,
 ) -> Result<String, String> {
     let parent = match model_dir {
         Some(d) if !d.is_empty() => std::path::PathBuf::from(d),
@@ -137,6 +140,25 @@ pub async fn download_zipformer_model<R: Runtime>(
     let dir = crate::asr::zipformer::download::download_zipformer_model(&app, parent, proxy)
         .await
         .map_err(|e| e.to_string())?;
+
+    // Persist the path and rebuild the provider if Zipformer is active.
+    let mut config = storage.load_config();
+    config.asr.zipformer.model_dir = dir.display().to_string();
+    storage.save_config(&config).map_err(|e| e.to_string())?;
+
+    if matches!(
+        config.asr.provider,
+        crate::storage::AsrProviderKind::ZipformerStreaming
+    ) {
+        let provider = crate::asr::build_provider(&config.asr, &config.proxy)
+            .map_err(|e| e.to_string())?;
+        asr.replace(provider).map_err(|e| {
+            format!(
+                "{e}\n模型已下载并保存，但未能立即加载。请停止录音/会议后重试，或重启应用。"
+            )
+        })?;
+    }
+
     Ok(dir.display().to_string())
 }
 
