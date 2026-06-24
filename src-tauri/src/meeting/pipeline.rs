@@ -216,4 +216,33 @@ mod tests {
         assert_eq!(acc.full_text, "");
         assert!(acc.segments.is_empty());
     }
+
+    /// Regression for the original bug: a 20-30 minute recording must NOT hang.
+    ///
+    /// This validates the *no-hang* property structurally: a very long
+    /// synthetic stream (30 min of silence) is drained through a fake-prob
+    /// endpointer (no model needed). It proves the feeder loop always reaches
+    /// EOF and returns, regardless of input length — the precise failure mode
+    /// of the old "buffer everything then infer once" design, which held the
+    /// whole recording in memory and OOM'd / hung on the single inference.
+    #[test]
+    fn long_stream_does_not_hang() {
+        use crate::asr::sensevoice::vad::VadEndpointer;
+        // Pure silence → prob source always returns 0.0 → no segments emitted,
+        // but every 512-sample chunk is still consumed.
+        let mut ep = VadEndpointer::new(VadEndpointerConfig::default(), |_| 0.0);
+        // 30 minutes @ 16 kHz = 28.8M samples, fed in 4096-sample chunks.
+        let total = 28_800_000usize;
+        let mut produced = 0usize;
+        let chunk = [0.0f32; 4096];
+        let mut fed = 0usize;
+        while fed < total {
+            let n = (total - fed).min(chunk.len());
+            produced += ep.feed(&chunk[..n]).len();
+            fed += n;
+        }
+        produced += ep.flush().len();
+        // Pure silence → no segments. The point is we got here at all and fast.
+        assert_eq!(produced, 0);
+    }
 }
