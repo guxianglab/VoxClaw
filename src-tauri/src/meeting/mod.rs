@@ -11,4 +11,5 @@
 pub mod audio;
 pub mod llm;
 pub mod loopback;
+pub mod pipeline;
 pub mod session;
