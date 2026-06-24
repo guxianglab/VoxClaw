@@ -281,6 +281,12 @@ impl SenseVoiceProvider {
         let _guard = self.inner.session.lock();
         drop(_guard);
     }
+
+    /// Transcribe a single 16 kHz speech segment. Used by the meeting
+    /// pipeline. Reuses the shared ONNX session (mutex-guarded).
+    pub fn transcribe_segment(&self, samples_16k: &[f32]) -> Result<String> {
+        run_inference(&self.inner, samples_16k)
+    }
 }
 
 impl AsrProvider for SenseVoiceProvider {
@@ -333,6 +339,10 @@ impl AsrProvider for SenseVoiceProvider {
             on_update,
             segments: Arc::new(Mutex::new(Vec::new())),
         }))
+    }
+
+    fn as_sensevoice(&self) -> Option<&SenseVoiceProvider> {
+        Some(self)
     }
 }
 

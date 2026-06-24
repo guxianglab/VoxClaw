@@ -47,6 +47,13 @@ pub trait AsrProvider: Send + Sync {
     fn name(&self) -> &'static str;
     fn capabilities(&self) -> AsrCapabilities;
     fn start_streaming(&self, params: AsrStreamParams) -> Result<Box<dyn AsrSession>>;
+
+    /// Downcast hook for meeting mode, which needs the concrete SenseVoice
+    /// provider's per-segment inference. Default returns `None`; SenseVoice
+    /// overrides to return `Some(self)`.
+    fn as_sensevoice(&self) -> Option<&crate::asr::sensevoice::SenseVoiceProvider> {
+        None
+    }
 }
 
 pub trait AsrSession: Send {
