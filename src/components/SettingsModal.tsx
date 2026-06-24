@@ -818,7 +818,7 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
                       {/* VAD model — required for meeting mode (segmented inference) */}
                       <div className="mt-5 border-t border-neutral-100 pt-4">
                         <div className="mb-3 rounded-md bg-neutral-100 px-4 py-3 text-sm text-neutral-500">
-                          VAD 模型 · 会议模式必需，用于语音分段，首次使用需下载 ~2 MB
+                          VAD 模型 · 会议模式必需，用于语音分段，首次使用需下载 ~1 MB
                         </div>
                         <div className="flex items-center gap-3">
                           <PrimaryButton

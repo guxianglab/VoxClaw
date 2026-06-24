@@ -213,9 +213,11 @@ async fn download_vad_one<R: Runtime>(
     client: &reqwest::Client,
     dest: &Path,
 ) -> Result<()> {
-    // HuggingFace-hosted Silero VAD ONNX (context-prefix export, ~2 MB).
+    // Silero VAD ONNX from the sherpa-onnx GitHub release (official, no auth
+    // required, ~0.6 MB). The HuggingFace `resolve` URL returns 401 in some
+    // environments due to LFS auth, so we use the GitHub release asset.
     let url =
-        "https://huggingface.co/snakers4/silero-vad/resolve/main/src/silero_vad/data/silero_vad.onnx";
+        "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx";
 
     let response = client
         .get(url)
