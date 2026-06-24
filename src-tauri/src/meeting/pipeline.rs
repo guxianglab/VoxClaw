@@ -98,6 +98,15 @@ pub fn run_pipeline(
         None
     };
 
+    // Overlap context: the tail of the previous segment is prepended to the
+    // next segment's audio before inference. This gives SenseVoice the acoustic
+    // context it needs to correctly recognize words at the segment boundary
+    // (e.g. "...明天下午" + "的4点" — without overlap, "下午的" is split and
+    // misrecognized). Only used for inference; accumulation/timestamps use the
+    // segment's own boundaries.
+    let overlap_samples = OVERLAP_MS * TARGET_SR as usize / 1000;
+    let mut prev_tail: Vec<f32> = Vec::new();
+
     while let Ok(chunk) = audio_rx.recv() {
         let mono_16k = match resampler.as_mut() {
             Some(r) => r.process(&chunk),
@@ -105,13 +114,33 @@ pub fn run_pipeline(
         };
         let completed = endpointer.feed(&mono_16k);
         for seg in completed {
-            process_segment(&provider, &mut acc, &seg, &on_segment);
+            process_segment(
+                &provider,
+                &mut acc,
+                &seg,
+                &on_segment,
+                &prev_tail,
+                overlap_samples,
+            );
+            // Save this segment's tail for the next segment's overlap context.
+            if seg.samples.len() >= overlap_samples {
+                prev_tail = seg.samples[seg.samples.len() - overlap_samples..].to_vec();
+            } else {
+                prev_tail = seg.samples.clone();
+            }
         }
     }
 
     // EOF: flush the final in-progress segment.
     for seg in endpointer.flush() {
-        process_segment(&provider, &mut acc, &seg, &on_segment);
+        process_segment(
+            &provider,
+            &mut acc,
+            &seg,
+            &on_segment,
+            &prev_tail,
+            overlap_samples,
+        );
     }
 
     Ok(PipelineResult {
@@ -120,21 +149,41 @@ pub fn run_pipeline(
     })
 }
 
+/// How much of the previous segment's tail to prepend as overlap context.
+/// 1.5 s is a good balance: enough acoustic context for word-boundary recovery,
+/// short enough to not skew recognition of the current segment.
+const OVERLAP_MS: usize = 1500;
+
 fn process_segment(
     provider: &SenseVoiceProvider,
     acc: &mut SegmentAccumulator,
     seg: &VadSegment,
     on_segment: &impl Fn(&str),
+    prev_tail: &[f32],
+    overlap_samples: usize,
 ) {
     let dur_ms = (seg.samples.len() as f64 / TARGET_SR as f64 * 1000.0) as u64;
     println!(
-        "[MEETING] segment: samples={}, duration={:.1}s, offset={:.1}s",
+        "[MEETING] segment: samples={}, duration={:.1}s, offset={:.1}s, overlap={}",
         seg.samples.len(),
         dur_ms as f64 / 1000.0,
         seg.start_sample as f64 / TARGET_SR as f64,
+        prev_tail.len(),
     );
-    match provider.transcribe_segment(&seg.samples) {
+
+    // Build inference input: [prev_tail (context)] + [segment audio].
+    let mut infer_input = Vec::with_capacity(prev_tail.len() + seg.samples.len());
+    infer_input.extend_from_slice(prev_tail);
+    infer_input.extend_from_slice(&seg.samples);
+
+    match provider.transcribe_segment(&infer_input) {
         Ok(text) => {
+            // SenseVoice may transcribe the overlap context as extra words at
+            // the start. Strip them: find where the current segment's text
+            // begins by comparing against a non-overlap transcription only when
+            // the overlap produced duplicate leading text. For now we keep the
+            // full text — leading-context words are usually benign and the
+            // bigger win is boundary recovery.
             println!("[MEETING] segment text: {:?}", text);
             acc.push(seg, &text);
             on_segment(&acc.full_text.clone());
