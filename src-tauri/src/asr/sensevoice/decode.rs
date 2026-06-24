@@ -92,8 +92,54 @@ impl TokenVocab {
                 }
             }
         }
-        out.trim().to_string()
+        collapse_excessive_repeats(out.trim())
     }
+}
+
+/// Fold runs of the same CJK character longer than 3 to at most 3.
+///
+/// SenseVoice occasionally emits pathological repetition on short/rapid speech
+/// (e.g. "吃早饭" → "吃早早早早早饭"). In Chinese, the same character repeated
+/// 4+ times in a row is never legitimate text (legitimate emphasis like
+/// "哈哈哈" stays at ≤3). We keep up to 3 and collapse the rest.
+fn collapse_excessive_repeats(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() {
+        return String::new();
+    }
+    let mut out = String::with_capacity(chars.len());
+    let mut run_char = chars[0];
+    let mut run_len = 1usize;
+    out.push(run_char);
+
+    for &ch in &chars[1..] {
+        if ch == run_char {
+            run_len += 1;
+            // Keep at most 3 consecutive identical CJK characters.
+            if is_cjk(run_char) && run_len > 3 {
+                continue;
+            }
+            // Non-CJK (latin/digits): allow legitimate repeats up to 2.
+            if !is_cjk(run_char) && run_len > 2 {
+                continue;
+            }
+            out.push(ch);
+        } else {
+            run_char = ch;
+            run_len = 1;
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// True for CJK Unified Ideographs (covers Chinese/Japanese/Korean hanzi).
+fn is_cjk(ch: char) -> bool {
+    matches!(ch,
+        '\u{4E00}'..='\u{9FFF}'   // CJK Unified Ideographs
+        | '\u{3400}'..='\u{4DBF}' // CJK Extension A
+        | '\u{F900}'..='\u{FAFF}' // CJK Compatibility Ideographs
+    )
 }
 
 /// Anything wrapped in `<|...|>` (language tag, emotion, event, itn flag…).
@@ -124,4 +170,31 @@ pub fn ctc_greedy(logits: &[f32], n_frames: usize, vocab_size: usize, blank_id: 
         prev = id as i64;
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collapse_folds_excessive_cjk_repeats() {
+        // 5x"早" → folded to 3 (max allowed for CJK).
+        assert_eq!(collapse_excessive_repeats("吃早早早早早饭"), "吃早早早饭");
+    }
+
+    #[test]
+    fn collapse_keeps_legitimate_triple() {
+        assert_eq!(collapse_excessive_repeats("哈哈哈"), "哈哈哈");
+    }
+
+    #[test]
+    fn collapse_keeps_normal_text() {
+        assert_eq!(collapse_excessive_repeats("吃早饭去玩"), "吃早饭去玩");
+    }
+
+    #[test]
+    fn collapse_keeps_distinct_adjacent_chars() {
+        // "早早" appearing as a real word stays (run of 2).
+        assert_eq!(collapse_excessive_repeats("早早起"), "早早起");
+    }
 }
