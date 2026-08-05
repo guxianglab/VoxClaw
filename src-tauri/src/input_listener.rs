@@ -26,6 +26,10 @@ const RI_MOUSE_MIDDLE_BUTTON_DOWN: u16 = 0x0010;
 const RI_MOUSE_MIDDLE_BUTTON_UP: u16 = 0x0020;
 
 const HOLD_THRESHOLD_MS: u64 = 350;
+/// The dummy Ctrl injected on right-Alt press (to keep Windows from opening
+/// the menu bar on release) is delayed briefly; if a character key arrives in
+/// between — i.e. the user is typing AltGr — the Ctrl is skipped entirely.
+const ALT_DUMMY_CTRL_DELAY_MS: u64 = 60;
 
 #[derive(Debug, Clone)]
 pub enum InputEvent {
@@ -33,6 +37,9 @@ pub enum InputEvent {
     StartSkill,
     StopSkill,
     DictationFinalizeWindowElapsed {
+        session_id: u64,
+    },
+    DictationFinalizeWatchdog {
         session_id: u64,
     },
     DictationAsrFinished {
@@ -59,8 +66,8 @@ impl InputListener {
         let enable_alt = self.enable_alt.clone();
 
         thread::spawn(move || {
-            let middle_trigger = HoldTrigger::new();
-            let alt_trigger = HoldTrigger::new();
+            let middle_trigger = HoldTrigger::new(false);
+            let alt_trigger = HoldTrigger::new(true);
 
             unsafe {
                 let class_name = windows::core::w!("SonicClawRawInputClass");
@@ -230,6 +237,11 @@ unsafe fn handle_raw_input(state: &ListenerState, lparam: LPARAM) {
         }
     } else if raw.header.dwType == RIM_TYPEKEYBOARD.0 {
         let kb = raw.data.keyboard;
+        // Ignore input injected by this app (e.g. the dummy Ctrl), so it is
+        // never mistaken for real typing.
+        if kb.ExtraInformation as usize == crate::keyboard::INJECTED_EXTRA_INFO {
+            return;
+        }
         let vkey = kb.VKey;
         let flags = kb.Flags;
 
@@ -243,11 +255,13 @@ unsafe fn handle_raw_input(state: &ListenerState, lparam: LPARAM) {
                 if is_release {
                     state.alt_trigger.on_release(&state.tx);
                 } else {
-                    // Send a dummy keystroke (Ctrl) to prevent Windows from activating the window menu when Alt is released.
-                    crate::keyboard::send_key_click(crate::keyboard::Key::Control);
                     state.alt_trigger.on_press(&state.tx);
                 }
             }
+        } else {
+            // A real key arriving while right-Alt is held means AltGr typing
+            // (e.g. `@` on a European layout) — never a dictation toggle.
+            state.alt_trigger.mark_other_key();
         }
     }
 }
@@ -261,15 +275,28 @@ struct HoldTrigger {
     pressed: Arc<AtomicBool>,
     skill_active: Arc<AtomicBool>,
     generation: Arc<AtomicU64>,
+    /// Set when any real (non-injected) key arrives while the trigger key is
+    /// held. For the right-Alt trigger this means AltGr typing: the release
+    /// must NOT toggle dictation and the dummy Ctrl must NOT be injected.
+    other_key_seen: Arc<AtomicBool>,
+    /// When true, a delayed dummy Ctrl is injected on press unless another
+    /// key arrives first (only the right-Alt trigger needs this).
+    inject_dummy_ctrl: bool,
 }
 
 impl HoldTrigger {
-    fn new() -> Self {
+    fn new(inject_dummy_ctrl: bool) -> Self {
         Self {
             pressed: Arc::new(AtomicBool::new(false)),
             skill_active: Arc::new(AtomicBool::new(false)),
             generation: Arc::new(AtomicU64::new(0)),
+            other_key_seen: Arc::new(AtomicBool::new(false)),
+            inject_dummy_ctrl,
         }
+    }
+
+    fn mark_other_key(&self) {
+        self.other_key_seen.store(true, Ordering::Release);
     }
 
     fn on_press(&self, tx: &Sender<InputEvent>) {
@@ -278,10 +305,12 @@ impl HoldTrigger {
         }
 
         self.skill_active.store(false, Ordering::Release);
+        self.other_key_seen.store(false, Ordering::Release);
         let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
         let pressed = self.pressed.clone();
         let skill_active = self.skill_active.clone();
         let generation_state = self.generation.clone();
+        let other_key_seen = self.other_key_seen.clone();
         let tx = tx.clone();
 
         thread::spawn(move || {
@@ -295,10 +324,27 @@ impl HoldTrigger {
                 return;
             }
 
+            // AltGr typing: another key arrived during the hold — not a
+            // trigger press.
+            if other_key_seen.load(Ordering::Acquire) {
+                return;
+            }
+
             if !skill_active.swap(true, Ordering::AcqRel) {
                 tx.send(InputEvent::StartSkill).ok();
             }
         });
+
+        if self.inject_dummy_ctrl {
+            let pressed = self.pressed.clone();
+            let other_key_seen = self.other_key_seen.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(ALT_DUMMY_CTRL_DELAY_MS));
+                if pressed.load(Ordering::Acquire) && !other_key_seen.load(Ordering::Acquire) {
+                    crate::keyboard::send_key_click(crate::keyboard::Key::Control);
+                }
+            });
+        }
     }
 
     fn on_release(&self, tx: &Sender<InputEvent>) {
@@ -306,9 +352,13 @@ impl HoldTrigger {
             return; // wasn't pressed
         }
 
+        // AltGr typing (a character key arrived during the hold): the release
+        // must not toggle dictation.
+        let other_keys = self.other_key_seen.load(Ordering::Acquire);
+
         if self.skill_active.swap(false, Ordering::AcqRel) {
             tx.send(InputEvent::StopSkill).ok();
-        } else {
+        } else if !other_keys {
             tx.send(InputEvent::Click).ok();
         }
     }

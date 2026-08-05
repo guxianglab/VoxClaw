@@ -116,6 +116,10 @@ pub enum ConfigSkillPlan {
 // ---------------------------------------------------------------------------
 
 pub const DOUBLE_CLICK_WINDOW_MS: u64 = 280;
+/// If the ASR finalization for a dictation session does not complete within
+/// this window, the session is failed so the input state machine can never
+/// get stuck in `PendingFinalize` forever.
+pub const DICTATION_FINALIZE_TIMEOUT_SECS: u64 = 90;
 pub const INDICATOR_LOGICAL_WIDTH: f64 = 800.0;
 pub const INDICATOR_COLLAPSED_HEIGHT: f64 = 200.0;
 pub const INDICATOR_EXPANDED_HEIGHT: f64 = 520.0;
@@ -128,15 +132,17 @@ pub const INDICATOR_BOTTOM_MARGIN: f64 = 120.0;
 /// Keep logs readable: single-line preview with a hard cap.
 pub fn preview_text(s: &str, max_chars: usize) -> String {
     let mut out = String::with_capacity(max_chars.min(s.len()));
+    let mut count = 0usize;
     for ch in s.chars() {
-        if ch == '\n' || ch == '\r' || ch == '\t' {
-            out.push(' ');
-        } else {
-            out.push(ch);
-        }
-        if out.chars().count() >= max_chars {
+        if count >= max_chars {
             break;
         }
+        out.push(if ch == '\n' || ch == '\r' || ch == '\t' {
+            ' '
+        } else {
+            ch
+        });
+        count += 1;
     }
     out
 }

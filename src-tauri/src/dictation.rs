@@ -150,10 +150,10 @@ pub fn process_transcription<R: Runtime>(
         // Output text (blocking, on a dedicated thread to not block tokio)
         let text_to_paste = final_text;
         let id = seq_id;
-        std::thread::spawn(move || {
+        tokio::task::spawn_blocking(move || {
             output_text(&text_to_paste, id);
         })
-        .join()
+        .await
         .ok();
     });
 }
@@ -204,9 +204,11 @@ pub fn process_transcription_for_agent<R: Runtime>(
             eprintln!("[AGENT] #{} LLM not configured, falling back to plain dictation", seq_id);
             // Fall back to plain text paste
             let id = seq_id;
-            std::thread::spawn(move || {
+            tokio::task::spawn_blocking(move || {
                 output_text(&text, id);
-            }).join().ok();
+            })
+            .await
+            .ok();
             return;
         }
 
@@ -227,7 +229,9 @@ pub fn process_transcription_for_agent<R: Runtime>(
             Err(e) => {
                 eprintln!("[AGENT] #{} Failed to create provider: {}", seq_id, e);
                 let id = seq_id;
-                std::thread::spawn(move || { output_text(&text, id); }).join().ok();
+                tokio::task::spawn_blocking(move || { output_text(&text, id); })
+                    .await
+                    .ok();
                 return;
             }
         };
@@ -322,7 +326,9 @@ pub fn process_transcription_for_agent<R: Runtime>(
             Err(e) => {
                 eprintln!("[AGENT] #{} Failed to build agent: {}", seq_id, e);
                 let id = seq_id;
-                std::thread::spawn(move || { output_text(&text, id); }).join().ok();
+                tokio::task::spawn_blocking(move || { output_text(&text, id); })
+                    .await
+                    .ok();
                 return;
             }
         };
@@ -368,7 +374,9 @@ pub fn process_transcription_for_agent<R: Runtime>(
                     Err(e) => {
                         eprintln!("[AGENT] #{} session create failed: {}", seq_id, e);
                         let id = seq_id;
-                        std::thread::spawn(move || { output_text(&text, id); }).join().ok();
+                        tokio::task::spawn_blocking(move || { output_text(&text, id); })
+                            .await
+                            .ok();
                         return;
                     }
                 };
@@ -448,9 +456,11 @@ pub fn process_transcription_for_agent<R: Runtime>(
 
                     let id = seq_id;
                     if result.actions.is_empty() {
-                        std::thread::spawn(move || {
+                        tokio::task::spawn_blocking(move || {
                             output_text(&final_text, id);
-                        }).join().ok();
+                        })
+                        .await
+                        .ok();
                     } else {
                         println!("[AGENT] #{} Skipping paste: actions were executed", seq_id);
                     }
@@ -471,7 +481,9 @@ pub fn process_transcription_for_agent<R: Runtime>(
                 // Only fall back to plain text paste for non-cancellation errors
                 if !matches!(e, AgentError::Cancelled) {
                     let id = seq_id;
-                    std::thread::spawn(move || { output_text(&text, id); }).join().ok();
+                    tokio::task::spawn_blocking(move || { output_text(&text, id); })
+                        .await
+                        .ok();
                 }
             }
         }
@@ -751,6 +763,7 @@ pub fn stop_agent_recording_async<R: Runtime>(
     let (_buffer, _sample_rate) = stop_recording_now(app_handle);
 
     let Some(session) = streaming_session.take() else {
+        processing.store(false, std::sync::atomic::Ordering::SeqCst);
         return;
     };
 
@@ -777,6 +790,7 @@ pub fn stop_agent_recording_async<R: Runtime>(
             }
             Err(e) => {
                 eprintln!("[AGENT] Transcription error: {}", e);
+                processing.store(false, std::sync::atomic::Ordering::SeqCst);
             }
         }
     });
@@ -785,6 +799,7 @@ pub fn stop_agent_recording_async<R: Runtime>(
 pub fn stop_skill_recording_async<R: Runtime>(
     app_handle: &AppHandle<R>,
     streaming_session: &mut Option<asr::StreamingSession>,
+    processing: ProcessingState,
     llm_cancel: LlmCancelState,
     skill_state: SkillExecutionState,
     log_tag: &str,
@@ -803,10 +818,12 @@ pub fn stop_skill_recording_async<R: Runtime>(
         if let Some(session_id) = crate::skill_engine::current_skill_execution_session_id(&skill_state) {
             crate::skill_engine::finish_skill_execution_session(&skill_state, session_id);
         }
+        processing.store(false, std::sync::atomic::Ordering::SeqCst);
         return;
     };
 
     let Some(skill_session_id) = crate::skill_engine::current_skill_execution_session_id(&skill_state) else {
+        processing.store(false, std::sync::atomic::Ordering::SeqCst);
         return;
     };
 
@@ -818,6 +835,7 @@ pub fn stop_skill_recording_async<R: Runtime>(
             let seq_id = TRANSCRIPTION_SEQ.fetch_add(1, AtomicOrdering::Relaxed);
             let app_handle_for_async = app_handle_clone.clone();
             let skill_state_for_async = skill_state.clone();
+            let processing_for_async = processing.clone();
             tauri::async_runtime::spawn(async move {
                 crate::skill_engine::execute_skill_transcript(
                     &app_handle_for_async,
@@ -830,11 +848,13 @@ pub fn stop_skill_recording_async<R: Runtime>(
                 )
                 .await;
                 crate::skill_engine::finish_skill_execution_session(&skill_state_for_async, skill_session_id);
+                processing_for_async.store(false, std::sync::atomic::Ordering::SeqCst);
             });
         }
         Err(e) => {
             eprintln!("[{}] Skill final transcription error: {}", log_tag, e);
             crate::skill_engine::finish_skill_execution_session(&skill_state, skill_session_id);
+            processing.store(false, std::sync::atomic::Ordering::SeqCst);
         }
     });
 }

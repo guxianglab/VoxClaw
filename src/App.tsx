@@ -35,9 +35,9 @@ function App() {
     Promise.all([api.getConfig(), api.getAsrStatus()]).then(([config, asrStatus]) => {
       const noDevice = !config.input_device || config.input_device === "";
       const noAsr = !asrStatus.configured;
-      const noLlm = !config.llm_config.base_url || !config.llm_config.api_key;
       setContinuousMode(config.agent_config?.continuous_mode ?? false);
-      if (noDevice || noAsr || noLlm) {
+      // LLM 配置是可选的（纯听写/离线 ASR 不需要），不要强制用户填写。
+      if (noDevice || noAsr) {
         setNeedsSetup(true);
         setIsSettingsOpen(true);
       }
@@ -79,9 +79,8 @@ function App() {
       Promise.all([api.getConfig(), api.getAsrStatus()]).then(([config, asrStatus]) => {
         const hasDevice = config.input_device && config.input_device !== "";
         const hasAsr = asrStatus.configured;
-        const hasLlm = config.llm_config.base_url && config.llm_config.api_key;
         setAsrConfigured(hasAsr);
-        if (hasDevice && hasAsr && hasLlm) {
+        if (hasDevice && hasAsr) {
           setNeedsSetup(false);
           setIsSettingsOpen(false);
         }

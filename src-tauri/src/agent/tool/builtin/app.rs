@@ -52,14 +52,14 @@ impl Tool for OpenBrowserTool {
     }
 
     fn description(&self) -> &str {
-        "Open the default web browser. Optionally navigate to a URL."
+        "Open the default web browser. Optionally navigate to a public http/https URL."
     }
 
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "url": { "type": "string", "description": "URL to open (optional)" }
+                "url": { "type": "string", "description": "Public http/https URL to open (optional)" }
             }
         })
     }
@@ -68,9 +68,12 @@ impl Tool for OpenBrowserTool {
         let url = args["url"].as_str().unwrap_or("");
         let mut cmd = Command::new("cmd");
         if url.is_empty() {
-            cmd.args(["/C", "start", ""]);
+            cmd.args(["/C", "start"]);
         } else {
-            cmd.args(["/C", "start", "", url]);
+            // Validate and quote so the URL can never be parsed as commands.
+            let normalized = crate::skills::normalize_browser_url(url)
+                .map_err(|e| AgentError::Tool(format!("Invalid URL: {}", e)))?;
+            cmd.args(["/C", "start", "", &format!("\"{}\"", normalized)]);
         }
         let status = cmd
             .status()
@@ -241,6 +244,13 @@ impl Tool for ComposeEmailTool {
         let subject = args["subject"].as_str().unwrap_or("");
         let body = args["body"].as_str().unwrap_or("");
 
+        if !to.is_empty() && !is_plausible_email(to) {
+            return Err(AgentError::Tool(format!(
+                "Invalid recipient email address: {}",
+                to
+            )));
+        }
+
         let mut mailto = String::from("mailto:");
         mailto.push_str(to);
         if !subject.is_empty() || !body.is_empty() {
@@ -255,8 +265,10 @@ impl Tool for ComposeEmailTool {
             mailto.push_str(&params.join("&"));
         }
 
+        // Quote the whole mailto: argument so cmd can never split on
+        // shell metacharacters.
         let mut cmd = Command::new("cmd");
-        cmd.args(["/C", "start", "", &mailto]);
+        cmd.args(["/C", "start", "", &format!("\"{}\"", mailto)]);
         let status = cmd
             .status()
             .await
@@ -274,4 +286,15 @@ impl Tool for ComposeEmailTool {
             Ok(ToolOutput::Error("Failed to open email client".into()))
         }
     }
+}
+
+/// Restrict recipients to a conservative email shape (no whitespace or shell
+/// metacharacters), so the mailto: argument can't be abused.
+fn is_plausible_email(to: &str) -> bool {
+    to.len() <= 254
+        && to.contains('@')
+        && !to.contains("..")
+        && to
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._%+-@".contains(c))
 }

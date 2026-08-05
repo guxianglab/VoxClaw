@@ -1526,8 +1526,9 @@ pub fn execute_skill(skill_id: &str) -> Result<(), String> {
 pub fn open_browser_url(url: &str) -> Result<(), String> {
     let normalized = normalize_browser_url(url)?;
     println!("[SKILL] Opening browser URL: {}", normalized);
+    // Quote the URL so cmd can never interpret `&`/`|`/etc. as commands.
     Command::new("cmd")
-        .args(["/C", "start", "", normalized.as_str()])
+        .args(["/C", "start", "", &format!("\"{}\"", normalized)])
         .spawn()
         .map_err(|e| format!("Failed to open browser URL: {}", e))?;
     Ok(())
@@ -1548,7 +1549,9 @@ pub fn open_windows_target(target: &WindowsTargetConfig) -> Result<(), String> {
             .arg("/C")
             .arg("start")
             .arg("")
-            .arg(&target.launch_target)
+            // Quote the launch target so it can never be parsed as extra
+            // commands even if a user-edited config contains metacharacters.
+            .arg(&format!("\"{}\"", target.launch_target))
             .args(&target.launch_args)
             .spawn()
             .map_err(|e| format!("Failed to open Windows target '{}': {}", target.name, e))?,
@@ -1845,8 +1848,49 @@ fn parse_tab_index(raw: &str) -> Option<usize> {
 
 fn validate_safe_browser_url(url: Url) -> Result<String, String> {
     match url.scheme() {
-        "http" | "https" => Ok(url.to_string()),
+        "http" | "https" => {
+            // Reject shell metacharacters outright: even quoted args must not
+            // contain `"` or `^` (cmd's escape char).
+            let raw = url.as_str();
+            if raw.contains('"') || raw.contains('^') {
+                return Err("URL 包含非法字符".to_string());
+            }
+            // Reject non-public IPs (loopback/private/link-local/CGNAT/metadata
+            // ranges like 169.254.169.254) so LLM-resolved URLs can't point at
+            // internal infrastructure. Localhost hostnames are still allowed.
+            if let Some(host) = url.host_str() {
+                if let Ok(ip) = host.parse::<IpAddr>() {
+                    if is_private_ip(&ip) {
+                        return Err("不支持打开内网或链路本地地址".to_string());
+                    }
+                }
+            }
+            Ok(url.to_string())
+        }
         _ => Err("仅支持 http 或 https 地址".to_string()),
+    }
+}
+
+/// True for loopback, private, link-local, CGNAT and unspecified ranges.
+fn is_private_ip(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            o[0] == 0 || o[0] == 10 || o[0] == 127
+                || (o[0] == 169 && o[1] == 254)
+                || (o[0] == 172 && (16..=31).contains(&o[1]))
+                || (o[0] == 192 && o[1] == 168)
+                || (o[0] == 100 && (o[1] & 0xC0) == 0x40)
+        }
+        IpAddr::V6(v6) => {
+            let s = v6.segments();
+            // ::1, ::
+            (s[..7].iter().all(|&v| v == 0) && s[7] <= 1)
+                // fc00::/7
+                || (s[0] & 0xfe00) == 0xfc00
+                // fe80::/10
+                || (s[0] & 0xffc0) == 0xfe80
+        }
     }
 }
 
