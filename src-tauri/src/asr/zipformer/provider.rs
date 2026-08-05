@@ -174,9 +174,10 @@ impl ZipformerSession {
                         if partial != last_partial && !partial.is_empty() {
                             last_partial = partial.clone();
                             // Full text so far = finalized utterances + current partial.
-                            let snapshot = {
-                                let c = collected_for_thread.lock().unwrap();
+                            let snapshot = if let Ok(c) = collected_for_thread.lock() {
                                 format!("{}{}", c.full_text, partial)
+                            } else {
+                                partial.clone()
                             };
                             on_update(snapshot);
                         }
@@ -235,8 +236,14 @@ impl ZipformerSession {
                     }
                 }
 
-                let c = collected_for_thread.lock().unwrap();
-                (c.full_text.clone(), c.segments.clone())
+                let c = match collected_for_thread.lock() {
+                    Ok(c) => (c.full_text.clone(), c.segments.clone()),
+                    Err(poisoned) => {
+                        let c = poisoned.into_inner();
+                        (c.full_text.clone(), c.segments.clone())
+                    }
+                };
+                c
             })
             .map_err(|e| anyhow!("failed to spawn zipformer thread: {e}"))?;
 

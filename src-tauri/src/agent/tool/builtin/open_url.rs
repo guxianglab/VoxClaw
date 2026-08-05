@@ -14,14 +14,14 @@ impl Tool for OpenUrlTool {
     }
 
     fn description(&self) -> &str {
-        "Open a URL in the default browser."
+        "Open a public http/https URL in the default browser."
     }
 
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "url": { "type": "string", "description": "The URL to open" }
+                "url": { "type": "string", "description": "The http/https URL to open" }
             },
             "required": ["url"]
         })
@@ -29,15 +29,20 @@ impl Tool for OpenUrlTool {
 
     async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, AgentError> {
         let url = args["url"].as_str().unwrap_or("");
+        // Validate strictly (http/https only, rejects private/link-local IPs
+        // and shell metacharacters) and quote the argument so cmd never
+        // interprets the URL as additional commands.
+        let normalized = crate::skills::normalize_browser_url(url)
+            .map_err(|e| AgentError::Tool(format!("Invalid URL: {}", e)))?;
         let mut cmd = Command::new("cmd");
-        cmd.args(["/C", "start", "", url]);
+        cmd.args(["/C", "start", "", &format!("\"{}\"", normalized)]);
         let status = cmd
             .status()
             .await
             .map_err(|e| AgentError::Tool(format!("Failed to open URL: {}", e)))?;
 
         if status.success() {
-            Ok(ToolOutput::Text(format!("Opened {}", url)))
+            Ok(ToolOutput::Text(format!("Opened {}", normalized)))
         } else {
             Ok(ToolOutput::Error("Failed to open URL".into()))
         }

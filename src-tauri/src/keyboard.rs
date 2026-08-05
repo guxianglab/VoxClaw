@@ -5,6 +5,11 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_N, VK_R, VK_T, VK_V, VK_W,
 };
 
+/// Magic value stamped into `dwExtraInfo` of every input this app injects,
+/// so the raw-input listener can tell its own injections apart from real
+/// user input.
+pub const INJECTED_EXTRA_INFO: usize = 0x534F_4E49; // "SONI"
+
 #[derive(Debug, Clone, Copy)]
 pub enum Key {
     Control,
@@ -96,7 +101,7 @@ fn send_input(vk: VIRTUAL_KEY, scan_code: u16, flags: u32) {
         wScan: scan_code,
         dwFlags: windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS(flags),
         time: 0,
-        dwExtraInfo: 0,
+        dwExtraInfo: INJECTED_EXTRA_INFO,
     };
 
     let input = INPUT {

@@ -66,7 +66,10 @@ fn action_to_decision(action: &str) -> HookDecision {
         "deny" => HookDecision::Block {
             reason: "Blocked by safety rule (deny)".into(),
         },
-        _ => HookDecision::Allow,
+        // Fail closed: an unknown action value must never silently allow.
+        other => HookDecision::Block {
+            reason: format!("Blocked by safety rule (unknown action: {other})"),
+        },
     }
 }
 
@@ -88,23 +91,31 @@ fn pattern_matches_command(pattern: &str, command: &str) -> bool {
 /// Check if a path falls within any of the scope directories.
 /// Expands `~/` to the user's home directory.
 fn path_in_scope(path: &str, scope: &[String]) -> bool {
-    let expanded_scopes: Vec<String> = scope
-        .iter()
-        .map(|s| {
-            if s.starts_with("~/") {
-                let home = home_dir();
-                format!("{}{}", home, &s[2..])
-            } else {
-                s.clone()
-            }
-        })
-        .collect();
-
-    let path_normalized = path.replace('\\', "/");
-    expanded_scopes.iter().any(|scope_dir| {
-        let scope_normalized = scope_dir.replace('\\', "/");
-        path_normalized.starts_with(&scope_normalized)
+    let normalized_path = normalize_scope_path(path);
+    scope.iter().any(|scope_dir| {
+        let normalized_scope = normalize_scope_path(scope_dir);
+        // Exact match, or a descendant (boundary checked via trailing '/'),
+        // so `C:\Users\foo` never matches `C:\Users\foobar\...`.
+        normalized_path == normalized_scope
+            || normalized_path.starts_with(&format!("{}/", normalized_scope))
     })
+}
+
+/// Expand `~/`, normalize separators to `/`, strip trailing slashes, and
+/// lowercase on Windows (paths are case-insensitive there).
+fn normalize_scope_path(s: &str) -> String {
+    let expanded = if s.starts_with("~/") {
+        format!("{}/{}", home_dir().trim_end_matches(['\\', '/']), &s[2..])
+    } else {
+        s.to_string()
+    };
+    let normalized = expanded.replace('\\', "/");
+    let trimmed = normalized.trim_end_matches('/').to_string();
+    if cfg!(windows) {
+        trimmed.to_lowercase()
+    } else {
+        trimmed
+    }
 }
 
 fn home_dir() -> String {
@@ -278,7 +289,13 @@ impl<R: Runtime> ToolHook for SafetyHook<R> {
     async fn before_call(&self, call: &ToolCall, _tool: &dyn Tool) -> HookDecision {
         let args: Value = serde_json::from_str(&call.arguments).unwrap_or(json!({}));
         let command = args["command"].as_str().unwrap_or("").to_string();
-        let path = args["path"].as_str().unwrap_or("").to_string();
+        // `file_edit` uses `file_path` while the other file tools use `path`;
+        // accept both so path-scope rules apply to every file tool.
+        let path = args["path"]
+            .as_str()
+            .or_else(|| args["file_path"].as_str())
+            .unwrap_or("")
+            .to_string();
 
         let rules = self.rules.lock().await;
         let decision = evaluate_safety_rules(&rules, &call.name, &command, &path);

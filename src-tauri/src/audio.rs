@@ -3,7 +3,6 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -42,7 +41,7 @@ struct SharedState {
     /// 离线缓冲区 (录音结束后取走)
     buffer: Mutex<Vec<f32>>,
     /// 流式发送器 (实时传给 ASR)
-    stream_tx: Mutex<Option<Sender<Vec<f32>>>>,
+    stream_tx: Mutex<Option<std::sync::mpsc::SyncSender<Vec<f32>>>>,
     /// 上次发送电平事件的时间戳 (ms)，用于节流
     last_emit_ms: AtomicU64,
 }
@@ -248,7 +247,10 @@ impl AudioService {
         self.ensure_stream()?;
         self.state.buffer.lock().unwrap().clear();
 
-        let (tx, rx) = std::sync::mpsc::channel::<Vec<f32>>();
+        // Bounded channel (~3 s of audio): if a consumer (e.g. a slow ASR
+        // websocket) stalls, the audio callback drops chunks instead of the
+        // buffer growing without bound.
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(300);
         *self.state.stream_tx.lock().unwrap() = Some(tx);
 
         self.state.active.store(true, Ordering::SeqCst);
@@ -485,7 +487,9 @@ fn process_audio_data<R: tauri::Runtime>(
     // ── 1. 流式发送给 ASR ──
     if let Ok(guard) = state.stream_tx.try_lock() {
         if let Some(ref tx) = *guard {
-            let _ = tx.send(mono.clone());
+            // try_send: never block the real-time audio callback; when the
+            // bounded channel is full (slow consumer), drop the chunk.
+            let _ = tx.try_send(mono.clone());
         }
     }
 

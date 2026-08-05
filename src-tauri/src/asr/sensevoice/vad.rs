@@ -194,34 +194,72 @@ impl<F: FnMut(&[f32]) -> f32> VadEndpointer<F> {
     }
 }
 
-/// Hand-written Silero VAD v4 inference over ONNX Runtime.
+/// Hand-written Silero VAD inference over ONNX Runtime.
 ///
-/// This matches the sherpa-onnx `silero_vad.onnx` export (stateful v4): the
-/// model takes an audio chunk `x [1,512]` plus the LSTM state `h [2,1,64]` and
-/// `c [2,1,64]`, and returns the speech probability plus the updated state
-/// `new_h` / `new_c`. The state is threaded chunk-to-chunk so the model has
-/// continuity across the whole stream.
+/// Supports both the k2-fsa/sherpa-onnx **v4** export and the native Silero
+/// **v5/v6** export by inspecting the session's I/O counts once at load time.
+/// Both flavours share the same 512-sample chunk frame; they differ in tensor
+/// names and the recurrent-state layout:
+///
+/// | variant | inputs | state | audio width |
+/// |---------|--------|-------|-------------|
+/// | v4 (k2-fsa) | `x`, `h` `[2,1,64]`, `c` `[2,1,64]` | split h/c, dim 64 | `[1,512]` |
+/// | v5/v6 (native) | `input`, `state` `[2,1,128]`, `sr` | merged state, dim 128 | `[1,576]` (64-sample rolling context prepended) |
+///
+/// Outputs follow symmetrically (`prob`/`new_h`/`new_c` vs `output`/`stateN`).
+/// The outer `VadEndpointer` keeps chunking at 512 samples either way; only
+/// this wrapper knows about the context window and state shape.
 ///
 /// The global ONNX Runtime environment is initialised once by
 /// `SenseVoiceProvider::try_new` before any meeting starts, so this wrapper
 /// only creates a `Session` (which is safe to do multiple times).
 pub struct SileroVad {
     session: Mutex<Session>,
-    /// LSTM hidden state h [2,1,64] and cell state c [2,1,64], updated each
-    /// call. Guarded by a mutex so the endpointer closure can borrow `&self`.
+    /// Recurrent state, version-dependent shape. Guarded by a mutex so the
+    /// endpointer closure can borrow `&self`.
     state: Mutex<VadState>,
+    /// Which model contract the loaded ONNX exposes (detected at load time).
+    variant: VadVariant,
+    /// v5/v6 only: 64-sample rolling context, prepended to each 512-sample
+    /// chunk to form the 576-wide model input. Zero-initialised; updated every
+    /// call with the tail of the previous input.
+    context: Mutex<Vec<f32>>,
 }
 
+/// Detected ONNX I/O contract.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum VadVariant {
+    /// k2-fsa/sherpa-onnx re-export: `x/h/c` in, `prob/new_h/new_c` out, state `[2,1,64]`.
+    V4,
+    /// native Silero v5/v6: `input/state/sr` in, `output/stateN` out, state `[2,1,128]`.
+    V5,
+}
+
+/// v5/v6 prepends a 64-sample rolling context window before the 512-sample
+/// chunk, making the effective model input 576 samples wide.
+const V5_CONTEXT: usize = 64;
+/// Effective model input width for v5/v6 (context + chunk).
+const V5_INPUT_WIDTH: usize = VAD_CHUNK + V5_CONTEXT;
+
 struct VadState {
-    h: Array3<f32>, // [2, 1, 64] — matches the model's expected rank-3 input
+    /// v4: h `[2,1,64]` and c `[2,1,64]`. v5/v6: merged state `[2,1,128]`
+    /// stored in `h` with `c` unused.
+    h: Array3<f32>,
     c: Array3<f32>,
 }
 
 impl VadState {
-    fn new() -> Self {
+    fn v4() -> Self {
         Self {
             h: Array3::zeros((2, 1, 64)),
             c: Array3::zeros((2, 1, 64)),
+        }
+    }
+
+    fn v5() -> Self {
+        Self {
+            h: Array3::zeros((2, 1, 128)),
+            c: Array3::zeros((2, 1, 128)),
         }
     }
 }
@@ -257,11 +295,26 @@ impl SileroVad {
                 .map_err(|e| anyhow!("vad load model: {e}"))?
         };
 
-        println!("[VAD] model loaded from {}", model_path.display());
+        // Detect the model contract from its I/O metadata. v4 exposes 3 inputs
+        // named x/h/c and 3 outputs; v5/v6 exposes 3 inputs named
+        // input/state/sr and 2 outputs. We key off the presence of the `sr`
+        // int64 input (uniquely v5/v6) and fall back to the v4 layout.
+        let variant = detect_variant(&session);
+        let state = match variant {
+            VadVariant::V4 => VadState::v4(),
+            VadVariant::V5 => VadState::v5(),
+        };
+        println!(
+            "[VAD] model loaded from {} (contract: {:?})",
+            model_path.display(),
+            variant
+        );
 
         Ok(Self {
             session: Mutex::new(session),
-            state: Mutex::new(VadState::new()),
+            state: Mutex::new(state),
+            variant,
+            context: Mutex::new(vec![0.0; V5_CONTEXT]),
         })
     }
 
@@ -275,6 +328,13 @@ impl SileroVad {
             ));
         }
 
+        match self.variant {
+            VadVariant::V4 => self.process_v4(chunk),
+            VadVariant::V5 => self.process_v5(chunk),
+        }
+    }
+
+    fn process_v4(&self, chunk: &[f32]) -> Result<f32> {
         // Snapshot current LSTM state, then drop the lock so we can run inference.
         let (h_arr, c_arr) = {
             let st = self.state.lock().map_err(|_| anyhow!("vad state poisoned"))?;
@@ -341,16 +401,113 @@ impl SileroVad {
         Ok(prob.clamp(0.0, 1.0))
     }
 
-    /// Reset the LSTM state to zero (e.g. for a new session). Each meeting
-    /// builds a fresh `SileroVad`, so this is reserved for callers that reuse
-    /// one instance across sessions.
+    fn process_v5(&self, chunk: &[f32]) -> Result<f32> {
+        // Snapshot the merged state `[2,1,128]`.
+        let state_arr = {
+            let st = self.state.lock().map_err(|_| anyhow!("vad state poisoned"))?;
+            st.h.clone()
+        };
+
+        // Build the 576-wide input = [rolling_context(64) || chunk(512)].
+        let mut input_buf: Vec<f32> = {
+            let ctx = self
+                .context
+                .lock()
+                .map_err(|_| anyhow!("vad context poisoned"))?;
+            let mut buf = Vec::with_capacity(V5_INPUT_WIDTH);
+            buf.extend_from_slice(&ctx);
+            buf
+        };
+        input_buf.extend_from_slice(chunk);
+
+        let input_input =
+            Array2::from_shape_vec((1, V5_INPUT_WIDTH), input_buf.clone())
+                .map_err(|e| anyhow!("vad v5 input reshape: {e}"))?;
+        let input_tensor =
+            Tensor::from_array(input_input).map_err(|e| anyhow!("vad v5 input tensor: {e}"))?;
+        let state_tensor =
+            Tensor::from_array(state_arr).map_err(|e| anyhow!("vad v5 state tensor: {e}"))?;
+        let sr_arr = ndarray::array![16_000i64];
+        let sr_tensor =
+            Tensor::from_array(sr_arr).map_err(|e| anyhow!("vad v5 sr tensor: {e}"))?;
+
+        let mut session = self
+            .session
+            .lock()
+            .map_err(|_| anyhow!("vad session poisoned"))?;
+        let outputs = session
+            .run(ort::inputs!["input" => input_tensor, "state" => state_tensor, "sr" => sr_tensor])
+            .map_err(|e| anyhow!("vad v5 run: {e}"))?;
+
+        let mut prob: f32 = 0.0;
+        let mut new_state: Option<Array3<f32>> = None;
+        for (name, value) in outputs.iter() {
+            let arr = match value.try_extract_array::<f32>() {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            match name {
+                // v5/v6 names the scalar-probability output `output`; some
+                // builds still emit `prob`, so accept both.
+                "output" | "prob" => {
+                    prob = arr
+                        .as_slice()
+                        .and_then(|s| s.first().copied())
+                        .unwrap_or(0.0);
+                }
+                // Updated state is named `stateN` (native) — keep it 3D `[2,1,128]`.
+                "stateN" | "new_state" | "state" => {
+                    new_state = Some(
+                        arr.to_owned()
+                            .into_shape_with_order((2, 1, 128))
+                            .unwrap_or_else(|_| Array3::zeros((2, 1, 128))),
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        // Slide the context window: the last 64 samples of this input become
+        // the next call's context prefix.
+        let tail = input_buf[input_buf.len() - V5_CONTEXT..].to_vec();
+        if let Ok(mut ctx) = self.context.lock() {
+            ctx.clear();
+            ctx.extend_from_slice(&tail);
+        }
+        if let Some(s) = new_state {
+            if let Ok(mut st) = self.state.lock() {
+                st.h = s;
+            }
+        }
+
+        Ok(prob.clamp(0.0, 1.0))
+    }
+
+    /// Reset the recurrent state to zero (e.g. for a new session). Each
+    /// meeting builds a fresh `SileroVad`, so this is reserved for callers that
+    /// reuse one instance across sessions.
     #[allow(dead_code)]
     pub fn reset(&self) {
         if let Ok(mut st) = self.state.lock() {
             st.h.fill(0.0);
             st.c.fill(0.0);
         }
+        if let Ok(mut ctx) = self.context.lock() {
+            ctx.fill(0.0);
+        }
     }
+}
+
+/// Inspect a loaded session's inputs to decide which Silero contract it uses.
+/// v5/v6 uniquely carries an `sr`/`input` input; otherwise we assume v4.
+fn detect_variant(session: &Session) -> VadVariant {
+    for input in session.inputs() {
+        let name = input.name();
+        if name == "sr" || name == "input" {
+            return VadVariant::V5;
+        }
+    }
+    VadVariant::V4
 }
 
 fn vad_num_threads() -> usize {

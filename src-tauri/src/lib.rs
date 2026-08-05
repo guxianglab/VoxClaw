@@ -1,6 +1,7 @@
 mod agent;
 mod asr;
 mod audio;
+mod audio_enhancement;
 pub mod commands;
 mod dictation;
 mod http_client;
@@ -284,6 +285,20 @@ pub fn run() {
                                                     asr_result: None,
                                                 },
                                             );
+                                            // Watchdog: never let the pending
+                                            // finalize state wedge forever if
+                                            // the ASR session hangs.
+                                            let watchdog_tx = event_tx.clone();
+                                            std::thread::spawn(move || {
+                                                std::thread::sleep(Duration::from_secs(
+                                                    crate::state::DICTATION_FINALIZE_TIMEOUT_SECS,
+                                                ));
+                                                let _ = watchdog_tx.send(
+                                                    input_listener::InputEvent::DictationFinalizeWatchdog {
+                                                        session_id,
+                                                    },
+                                                );
+                                            });
                                         }
                                         Err(err) => {
                                             eprintln!(
@@ -375,6 +390,14 @@ pub fn run() {
 
                             dictation_state = DictationState::Idle;
 
+                            // Serialize agent/skill work against other input:
+                            // while processing is set, new triggers cancel the
+                            // running task instead of starting a new session.
+                            processing_for_thread.store(
+                                true,
+                                std::sync::atomic::Ordering::SeqCst,
+                            );
+
                             if intent == DictationIntent::Agent {
                                 dictation::stop_agent_recording_async(
                                     &app_handle,
@@ -386,6 +409,7 @@ pub fn run() {
                                 dictation::stop_skill_recording_async(
                                     &app_handle,
                                     &mut streaming_session,
+                                    processing_for_thread.clone(),
                                     llm_cancel_for_thread.clone(),
                                     skill_execution_for_thread.clone(),
                                     "SKILL",
@@ -449,6 +473,38 @@ pub fn run() {
                                 dictation_state = DictationState::Idle;
                             }
                         }
+                        InputEvent::DictationFinalizeWatchdog { session_id } => {
+                            let should_reset = if let DictationState::PendingFinalize(pending) =
+                                &mut dictation_state
+                            {
+                                if pending.session_id != session_id {
+                                    false
+                                } else if pending.asr_result.is_some() {
+                                    false
+                                } else {
+                                    // The ASR session never delivered a result —
+                                    // fail the session so input isn't blocked
+                                    // forever.
+                                    pending.asr_result = Some(Err(format!(
+                                        "听写识别在 {} 秒内未完成，已自动取消。请重试。",
+                                        crate::state::DICTATION_FINALIZE_TIMEOUT_SECS
+                                    )));
+                                    dictation::maybe_finalize_pending_dictation(
+                                        &app_handle,
+                                        pending,
+                                        processing_for_thread.clone(),
+                                        llm_cancel_for_thread.clone(),
+                                        "WATCHDOG",
+                                    )
+                                }
+                            } else {
+                                false
+                            };
+
+                            if should_reset {
+                                dictation_state = DictationState::Idle;
+                            }
+                        }
                     }
                 }
             });
@@ -483,6 +539,8 @@ pub fn run() {
             commands::download_vad_model,
             commands::check_zipformer_model_present,
             commands::download_zipformer_model,
+            commands::check_paraformer_model_present,
+            commands::download_paraformer_model,
             commands::get_input_devices,
             commands::get_current_input_device,
             commands::switch_input_device,
