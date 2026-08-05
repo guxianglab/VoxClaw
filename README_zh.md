@@ -54,7 +54,61 @@
 | --- | --- | --- |
 | 📝 **听写功能** | `鼠标中键` (长按) | 长按开始说话，松手即刻上屏到光标处。 |
 | 📝 **听写功能** | `右侧 Alt` (单点) | 点击一次开始，再点击一次结束并上屏。 |
-| ⚡ **语音指令** | `Ctrl + Win` (长按) | 说出指令（如“截个图”），松开立即执行。 |
+| ⚡ **语音指令** | `Ctrl + Win` (长按) | 说出指令（如”截个图”），松开立即执行。 |
+
+---
+
+## 📦 离线模式（SenseVoice）运行时 DLL 安装说明
+
+基于本地 SenseVoice 模型的离线模式需要依赖**微软的 ONNX Runtime** 才能进行推理。出于规避杀软误报以及缩小安装包体积的考虑，VoxClaw **未内置** 该 DLL，首次使用时需要你手动下载并放置 `onnxruntime.dll`。
+
+> ℹ️ 若跳过此步骤，VoxClaw 会回退到机器上**已有的** `onnxruntime.dll`（通常来自 Python 安装环境），而这些版本**几乎都是不兼容的旧版**，从而触发 `ort ... is not compatible with the ONNX Runtime binary` 报错。
+
+### 第一步 —— 下载正确的 DLL
+
+从微软官方仓库下载 **onnxruntime-win-x64-1.23.0**（CPU 标准版）：
+
+```
+https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-win-x64-1.23.0.zip
+```
+
+> ⚠️ **版本要求：** 项目内置的 `ort` 库（v2.0.0-rc.11）要求 ONNX Runtime **`>= 1.23.x`**。**不要**使用 1.20.x —— 这是绝大多数用户中招报错的版本。
+
+解压后取 `lib\onnxruntime.dll` 这**一个文件**即可。
+
+### 第二步 —— 放置 DLL（三选一）
+
+VoxClaw 会按以下顺序查找 DLL，任选其一即可：
+
+| 优先级 | 位置 | 说明 |
+| --- | --- | --- |
+| 1 | `voxclaw.exe` 同级目录 | **推荐。** 右键桌面快捷方式 → “打开文件所在的位置”，把 DLL 丢进去。完全脱离 Python 环境。 |
+| 2 | 环境变量 `SONICCLAW_ONNXRUNTIME_DLL` | 值设为 DLL 的完整路径。需要重启应用生效。 |
+| 3 | Python site-packages 目录 | **不推荐。** 可能被 `pip` 覆盖，版本会漂移。仅作最后兜底。 |
+
+### 第三步 —— 重启 VoxClaw
+
+ONNX Runtime 在一个进程内**只加载一次**并被冻结至进程结束。你**必须完全退出并重新打开 VoxClaw**，新 DLL 才会生效 —— 仅在运行中的进程里重新点击”切换模型”不会换 DLL。
+
+### 验证是否成功
+
+打开 **设置 → 切换到 SenseVoice → 切换模型**，应当**不再**出现 `is not compatible` 报错。若仍报错，请检查 DLL 是否在上述任一位置、以及应用是否真的重启过。
+
+### 一行 PowerShell 自动修复（默认安装路径）
+
+保存为 `fix-ort.ps1` 以管理员身份运行：
+
+```powershell
+$ErrorActionPreference = “Stop”
+Invoke-WebRequest -Uri “https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-win-x64-1.23.0.zip” -OutFile “$env:TEMP\ort.zip”
+Expand-Archive -Path “$env:TEMP\ort.zip” -DestinationPath “$env:TEMP\ort” -Force
+Copy-Item “$env:TEMP\ort\onnxruntime-win-x64-1.23.0\lib\onnxruntime.dll” -Destination “$env:LOCALAPPDATA\voxclaw\onnxruntime.dll” -Force
+Write-Host “完成。请重启 VoxClaw。”
+```
+
+> 💡 若 VoxClaw 不在默认路径，请将 `$env:LOCALAPPDATA\voxclaw` 替换为实际安装路径。
+
+> ⚠️ **关于 GPU：** 该 CPU 标准版 DLL **不含** DirectML 执行提供程序。若设置中开启了 `use_gpu`，DirectML 初始化会失败并静默回退到 CPU —— 听写功能照常可用，只是没有 GPU 加速。
 
 ---
 

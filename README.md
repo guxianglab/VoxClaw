@@ -59,6 +59,60 @@ We highly recommend starting with the **Mouse Middle Button**:
 
 ---
 
+## 📦 Offline Mode (SenseVoice) — Runtime DLL Setup
+
+The Offline Mode powered by the local SenseVoice model requires **Microsoft's ONNX Runtime** to run inference. VoxClaw does **not** bundle this DLL (to avoid antivirus false positives and to keep the installer small), so on first use you must download and place `onnxruntime.dll` yourself.
+
+> ℹ️ If you skip this step, VoxClaw will fall back to whatever `onnxruntime.dll` it finds on your machine (typically from a Python install) — which is very often an **incompatible version**, causing the error `ort ... is not compatible with the ONNX Runtime binary`.
+
+### Step 1 — Download the correct DLL
+
+Grab the official **onnxruntime-win-x64-1.23.0** package from Microsoft (CPU build):
+
+```
+https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-win-x64-1.23.0.zip
+```
+
+> ⚠️ **Version requirement:** the bundled `ort` crate (v2.0.0-rc.11) requires ONNX Runtime **`>= 1.23.x`**. Do **not** use 1.20.x — it is the version most users hit the incompatibility error with.
+
+Unzip and locate `lib\onnxruntime.dll` — that single file is all you need.
+
+### Step 2 — Place the DLL (pick one)
+
+VoxClaw searches these locations in order; use whichever fits your setup:
+
+| Priority | Location | Notes |
+| --- | --- | --- |
+| 1 | Next to `voxclaw.exe` | **Recommended.** Right-click the desktop shortcut → "Open file location", drop the DLL there. Fully isolates from Python. |
+| 2 | Env var `SONICCLAW_ONNXRUNTIME_DLL` | Set to the full path of the DLL. Requires app restart. |
+| 3 | Python site-packages | **Not recommended.** May be overwritten by `pip`; version can drift. Last-resort fallback only. |
+
+### Step 3 — Restart VoxClaw
+
+The ONNX Runtime is loaded **once per process** and frozen for the lifetime of the process. You **must fully quit and reopen VoxClaw** for the new DLL to take effect — re-clicking "Switch Model" inside a running process will keep using the old one.
+
+### Verifying it works
+
+Open **Settings → switch to SenseVoice → Switch Model**. You should no longer see the `is not compatible` error. If you still do, double-check the DLL is in one of the locations above and that the app was restarted.
+
+### One-line PowerShell fix
+
+For a default install location, save as `fix-ort.ps1` and run:
+
+```powershell
+$ErrorActionPreference = "Stop"
+Invoke-WebRequest -Uri "https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-win-x64-1.23.0.zip" -OutFile "$env:TEMP\ort.zip"
+Expand-Archive -Path "$env:TEMP\ort.zip" -DestinationPath "$env:TEMP\ort" -Force
+Copy-Item "$env:TEMP\ort\onnxruntime-win-x64-1.23.0\lib\onnxruntime.dll" -Destination "$env:LOCALAPPDATA\voxclaw\onnxruntime.dll" -Force
+Write-Host "Done. Restart VoxClaw now."
+```
+
+> 💡 Replace `$env:LOCALAPPDATA\voxclaw` with your actual install path if different.
+
+> ⚠️ **About GPU:** this CPU-only DLL does **not** include the DirectML provider. If `use_gpu` is enabled in Settings, DirectML initialization will fail and silently fall back to CPU — dictation still works, just without GPU acceleration.
+
+---
+
 ## 🧠 Smart AI Scenes (LLM Profiles)
 
 Take your dictation to the next level. Connect an OpenAI-compatible API to enable **Smart Scenes**. 
