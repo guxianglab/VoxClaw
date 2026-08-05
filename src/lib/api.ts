@@ -52,7 +52,11 @@ export interface OnlineAsrConfig {
     resource_id: string;
 }
 
-export type AsrProviderKind = "volcengine" | "sense_voice_onnx" | "zipformer_streaming";
+export type AsrProviderKind =
+    | "volcengine"
+    | "sense_voice_onnx"
+    | "zipformer_streaming"
+    | "paraformer_streaming";
 
 export interface SenseVoiceOnnxConfig {
     model_dir: string;
@@ -69,9 +73,16 @@ export interface AsrConfig {
     volcengine: OnlineAsrConfig;
     sensevoice: SenseVoiceOnnxConfig;
     zipformer: ZipformerStreamingConfig;
+    paraformer: ParaformerStreamingConfig;
 }
 
 export interface ZipformerStreamingConfig {
+    model_dir: string;
+    enable_endpoint: boolean;
+    use_gpu: boolean;
+}
+
+export interface ParaformerStreamingConfig {
     model_dir: string;
     enable_endpoint: boolean;
     use_gpu: boolean;
@@ -284,6 +295,10 @@ export const api = {
         invoke<boolean>("check_zipformer_model_present", { modelDir }),
     downloadZipformerModel: (modelDir?: string) =>
         invoke<string>("download_zipformer_model", { modelDir: modelDir ?? null }),
+    checkParaformerModelPresent: (modelDir: string) =>
+        invoke<boolean>("check_paraformer_model_present", { modelDir }),
+    downloadParaformerModel: (modelDir?: string) =>
+        invoke<string>("download_paraformer_model", { modelDir: modelDir ?? null }),
     getInputDevices: () => invoke<AudioDevice[]>("get_input_devices"),
     getCurrentInputDevice: () => invoke<string>("get_current_input_device"),
     switchInputDevice: (deviceId: string) => invoke("switch_input_device", { deviceId }),

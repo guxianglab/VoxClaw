@@ -62,8 +62,10 @@ hound = "3"
 # Uses `shared` linking (prebuilt DLLs) instead of `static` to avoid MSVC C
 # runtime symbol mismatches (__std_search_1 etc.) between the prebuilt static
 # lib and our toolchain. The build script copies the runtime DLLs next to the
-# binary automatically. Used for the streaming Zipformer meeting engine.
-sherpa-onnx = { version = "1.13", default-features = false, features = ["shared"] }
+# binary automatically. Used for the streaming Zipformer + Paraformer meeting
+# engines. Pinned to >=1.13.4 for the Windows wide-character path fix (avoids
+# the 中文路径 crash) and onnxruntime 1.27.0.
+sherpa-onnx = { version = "1.13.4", default-features = false, features = ["shared"] }
 tar = "0.4"
 bzip2 = "0.4"
 

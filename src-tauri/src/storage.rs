@@ -466,6 +466,9 @@ pub enum AsrProviderKind {
     SenseVoiceOnnx,
     /// sherpa-onnx Streaming Zipformer — offline streaming ASR for meetings.
     ZipformerStreaming,
+    /// sherpa-onnx Streaming Paraformer — Alibaba's streaming Mandarin ASR,
+    /// generally better zh CER than Zipformer.
+    ParaformerStreaming,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -539,6 +542,40 @@ fn default_zipformer_enable_endpoint() -> bool {
     true
 }
 
+/// Configuration for the sherpa-onnx Streaming Paraformer engine.
+///
+/// The model is an encoder + decoder pair plus a tokens file, all living under
+/// `model_dir`. See the streaming-paraformer-bilingual-zh-en pretrained model
+/// from k2-fsa / FunAudioLLM. On Mandarin CER it generally beats streaming
+/// Zipformer, so it is the recommended offline-streaming engine for meetings.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ParaformerStreamingConfig {
+    /// Directory holding encoder/decoder .onnx (int8 preferred) + tokens.txt.
+    #[serde(default)]
+    pub model_dir: String,
+    /// Enable the engine's built-in endpoint detector (sentence boundaries).
+    /// Should stay `true` for meeting use.
+    #[serde(default = "default_paraformer_enable_endpoint")]
+    pub enable_endpoint: bool,
+    /// Decode on GPU via ONNX Runtime DirectML when available.
+    #[serde(default)]
+    pub use_gpu: bool,
+}
+
+impl Default for ParaformerStreamingConfig {
+    fn default() -> Self {
+        Self {
+            model_dir: String::new(),
+            enable_endpoint: true,
+            use_gpu: false,
+        }
+    }
+}
+
+fn default_paraformer_enable_endpoint() -> bool {
+    true
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct AsrConfig {
     #[serde(default)]
@@ -549,6 +586,8 @@ pub struct AsrConfig {
     pub sensevoice: SenseVoiceOnnxConfig,
     #[serde(default)]
     pub zipformer: ZipformerStreamingConfig,
+    #[serde(default)]
+    pub paraformer: ParaformerStreamingConfig,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
@@ -678,6 +717,19 @@ fn default_context_history_count() -> usize {
     0
 }
 
+/// Opt-in speech-enhancement pre-filter (GTCRN / DPDFNet denoising before
+/// ASR). Disabled by default — enabling requires a denoiser model path.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(default)]
+pub struct AudioEnhancementConfig {
+    /// Master switch. When `false`, the pipeline uses a no-op pass-through.
+    pub enabled: bool,
+    /// Path to the GTCRN denoiser `.onnx` model.
+    pub gtcrn_model: String,
+    /// Path to the DPDFNet denoiser `.onnx` model (alternative to GTCRN).
+    pub dpdfnet_model: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AppConfig {
     pub trigger_mouse: bool,
@@ -694,6 +746,9 @@ pub struct AppConfig {
     pub skills: Vec<SkillConfig>,
     #[serde(default)]
     pub agent_config: AgentConfig,
+    /// Speech-enhancement pre-filter for ASR (opt-in experiment).
+    #[serde(default)]
+    pub audio_enhancement: AudioEnhancementConfig,
 }
 
 impl Default for AppConfig {
@@ -710,12 +765,14 @@ impl Default for AppConfig {
                 },
                 sensevoice: SenseVoiceOnnxConfig::default(),
                 zipformer: ZipformerStreamingConfig::default(),
+                paraformer: ParaformerStreamingConfig::default(),
             },
             input_device: String::new(),
             llm_config: LlmConfig::default(),
             proxy: ProxyConfig::default(),
             skills: skills::get_default_skills(),
             agent_config: AgentConfig::default(),
+            audio_enhancement: AudioEnhancementConfig::default(),
         }
     }
 }
@@ -1101,6 +1158,7 @@ fn recover_app_config_from_object(
             volcengine: legacy,
             sensevoice: SenseVoiceOnnxConfig::default(),
             zipformer: ZipformerStreamingConfig::default(),
+            paraformer: ParaformerStreamingConfig::default(),
         }
     } else {
         AsrConfig::default()
@@ -1117,6 +1175,7 @@ fn recover_app_config_from_object(
         proxy: read_value(&obj, "proxy").unwrap_or_default(),
         skills,
         agent_config: read_value(&obj, "agent_config").unwrap_or_default(),
+        audio_enhancement: read_value(&obj, "audio_enhancement").unwrap_or_default(),
     };
 
     (config, needs_save, join_notices(notice_parts))

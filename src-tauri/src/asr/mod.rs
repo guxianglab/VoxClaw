@@ -16,6 +16,7 @@ use crate::storage::{AsrConfig, AsrProviderKind, ProxyConfig};
 pub mod volcengine;
 pub mod sensevoice;
 pub mod zipformer;
+pub mod paraformer;
 
 // ---------------------------------------------------------------------------
 // Trait surface
@@ -94,6 +95,13 @@ pub fn build_provider(config: &AsrConfig, proxy: &ProxyConfig) -> Result<Arc<dyn
             let provider =
                 zipformer::ZipformerProvider::try_new(&config.zipformer).map_err(|err| {
                     anyhow!("Zipformer 流式引擎加载失败: {err}。请检查模型文件是否存在。")
+                })?;
+            Ok(Arc::new(provider))
+        }
+        AsrProviderKind::ParaformerStreaming => {
+            let provider =
+                paraformer::ParaformerProvider::try_new(&config.paraformer).map_err(|err| {
+                    anyhow!("Paraformer 流式引擎加载失败: {err}。请检查模型文件是否存在。")
                 })?;
             Ok(Arc::new(provider))
         }

@@ -1,6 +1,7 @@
 mod agent;
 mod asr;
 mod audio;
+mod audio_enhancement;
 pub mod commands;
 mod dictation;
 mod http_client;
@@ -483,6 +484,8 @@ pub fn run() {
             commands::download_vad_model,
             commands::check_zipformer_model_present,
             commands::download_zipformer_model,
+            commands::check_paraformer_model_present,
+            commands::download_paraformer_model,
             commands::get_input_devices,
             commands::get_current_input_device,
             commands::switch_input_device,

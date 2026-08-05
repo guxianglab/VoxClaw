@@ -213,17 +213,31 @@ async fn download_vad_one<R: Runtime>(
     client: &reqwest::Client,
     dest: &Path,
 ) -> Result<()> {
-    // Silero VAD ONNX from the sherpa-onnx GitHub release (official, no auth
-    // required, ~0.6 MB). The HuggingFace `resolve` URL returns 401 in some
-    // environments due to LFS auth, so we use the GitHub release asset.
-    let url =
+    // Silero VAD ONNX. We prefer the **native v6** model (snakers4/silero-vad,
+    // released 2025-08-26 — 16% fewer errors than v5 on noisy data) shipped
+    // inside the pip package's data dir. The runtime auto-detects v4 vs v5/v6
+    // from the ONNX I/O contract, so existing v4 downloads keep working; new
+    // downloads get the better v6 weights. ~2.3 MB.
+    //
+    // The HuggingFace `resolve` URL returns 401 in some environments due to
+    // LFS auth; the raw GitHub LFS pointer can also be incomplete, so we use
+    // the GitHub release asset from k2-fsa as a fallback if the primary fails.
+    const V6_URL: &str =
+        "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx";
+    const V4_FALLBACK_URL: &str =
         "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx";
 
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| anyhow!("request vad model failed: {e}"))?;
+    let response = match client.get(V6_URL).send().await {
+        Ok(r) if r.status().is_success() => r,
+        _ => {
+            eprintln!("[VAD] v6 download failed, falling back to v4 model");
+            client
+                .get(V4_FALLBACK_URL)
+                .send()
+                .await
+                .map_err(|e| anyhow!("request vad model failed: {e}"))?
+        }
+    };
     if !response.status().is_success() {
         return Err(anyhow!(
             "download vad failed: HTTP {}",
