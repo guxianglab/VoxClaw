@@ -87,6 +87,9 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
   const [isSaving, setIsSaving] = useState(false);
   const [saveOk, setSaveOk] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // Non-fatal notice returned by save (e.g. "engine selected but model not
+  // downloaded yet" — config was still saved).
+  const [saveNotice, setSaveNotice] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<SettingsTab>("audio");
   const [modelDownload, setModelDownload] = useState<{
     active: boolean;
@@ -94,11 +97,10 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
     progress: number;
     error: string | null;
   }>({ active: false, file: "", progress: 0, error: null });
-  // SenseVoice / VAD / Zipformer / Paraformer model presence, checked on open + after downloads finish.
+  // SenseVoice / VAD / Zipformer model presence, checked on open + after downloads finish.
   const [svPresent, setSvPresent] = useState<boolean | null>(null);
   const [vadPresent, setVadPresent] = useState<boolean | null>(null);
   const [zfPresent, setZfPresent] = useState<boolean | null>(null);
-  const [pfPresent, setPfPresent] = useState<boolean | null>(null);
   const timerRef = useRef<number | null>(null);
   const pendingRef = useRef<AppConfig | null>(null);
 
@@ -106,13 +108,15 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
     pendingRef.current = next;
     if (timerRef.current) window.clearTimeout(timerRef.current);
     setIsSaving(true);
+    setSaveNotice(null);
     timerRef.current = window.setTimeout(async () => {
       const finalConfig = pendingRef.current;
       if (finalConfig) {
         try {
-          await api.saveConfig(finalConfig);
+          const notice = await api.saveConfig(finalConfig);
           setSaveOk(true);
           setSaveError(null);
+          if (notice) setSaveNotice(notice);
           window.setTimeout(() => setSaveOk(false), 1500);
         } catch (error) {
           // Surface the backend error (e.g. engine switch blocked by an active
@@ -144,6 +148,7 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
     setActiveTab("audio");
     setShowWarning(false);
     setLlmResult(null);
+    setSaveNotice(null);
     const interval = window.setInterval(() => api.getInputDevices().then(setDevices), 3000);
     return () => window.clearInterval(interval);
   }, [isOpen]);
@@ -170,6 +175,7 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
       pendingRef.current = null;
       setIsSaving(false);
       setSaveError(null);
+      setSaveNotice(null);
       setConfig(nextConfig);
       setLlmResult(null);
     });
@@ -219,9 +225,6 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
       // location when no custom dir is configured so the status badge is honest.
       const zfDir = config?.asr.zipformer.model_dir || (await api.getZipformerDefaultDir());
       setZfPresent(await api.checkZipformerModelPresent(zfDir));
-      // Paraformer model lives in its own directory.
-      const pfDir = config?.asr.paraformer.model_dir || (await api.getParaformerDefaultDir());
-      setPfPresent(await api.checkParaformerModelPresent(pfDir));
     } catch {
       /* non-fatal: leave badges as unknown */
     }
@@ -313,41 +316,10 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
     }
   }, [config, saveLater]);
 
-  const handleDownloadParaformer = useCallback(async () => {
-    if (!config) return;
-    setModelDownload({ active: true, file: "", progress: 0, error: null });
-    try {
-      const dir = await api.downloadParaformerModel(
-        config.asr.paraformer.model_dir || undefined,
-      );
-      const next = {
-        ...config,
-        asr: {
-          ...config.asr,
-          paraformer: { ...config.asr.paraformer, model_dir: dir },
-        },
-      };
-      setConfig(next);
-      saveLater(next);
-    } catch (e) {
-      setModelDownload({
-        active: false,
-        file: "",
-        progress: 0,
-        error: e instanceof Error ? e.message : String(e),
-      });
-    }
-  }, [config, saveLater]);
-
   const openZipformerDir = useCallback(async () => {
     const dir = config?.asr.zipformer.model_dir || (await api.getZipformerDefaultDir());
     openPath(dir);
   }, [config?.asr.zipformer.model_dir]);
-
-  const openParaformerDir = useCallback(async () => {
-    const dir = config?.asr.paraformer.model_dir || (await api.getParaformerDefaultDir());
-    openPath(dir);
-  }, [config?.asr.paraformer.model_dir]);
 
   if (!isOpen || !config) return null;
 
@@ -682,6 +654,11 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
                 {saveError}
               </div>
             )}
+            {saveNotice && !saveError && !isFirstSetup && (
+              <div className="mt-2 max-w-xl text-xs leading-relaxed text-amber-600">
+                {saveNotice}
+              </div>
+            )}
           </div>
           <button
             onClick={close}
@@ -793,13 +770,6 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
                       active={config.asr.provider === "zipformer_streaming"}
                       onClick={() =>
                         updateConfig("asr", { ...config.asr, provider: "zipformer_streaming" })
-                      }
-                    />
-                    <EngineButton
-                      label="Paraformer (本地流式)"
-                      active={config.asr.provider === "paraformer_streaming"}
-                      onClick={() =>
-                        updateConfig("asr", { ...config.asr, provider: "paraformer_streaming" })
                       }
                     />
                   </div>
@@ -1018,74 +988,6 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
                           </span>
                         )}
                         {zfPresent && !modelDownload.active && (
-                          <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-700">
-                            ✓ 已下载
-                          </span>
-                        )}
-                        {!modelDownload.active && modelDownload.error && (
-                          <span className="truncate text-xs text-red-500">
-                            {modelDownload.error}
-                          </span>
-                        )}
-                      </div>
-                      {modelDownload.active && (
-                        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-neutral-200">
-                          <div
-                            className="h-full rounded-full bg-chinese-indigo transition-all"
-                            style={{ width: `${Math.round(modelDownload.progress * 100)}%` }}
-                          />
-                        </div>
-                      )}
-                    </>
-                  )}
-
-                  {config.asr.provider === "paraformer_streaming" && (
-                    <>
-                      <div className="mb-4 rounded-md bg-neutral-100 px-4 py-3 text-sm text-neutral-500">
-                        Streaming Paraformer · 阿里中英双语本地流式引擎，中文识别准确率优于 Zipformer，会议实时转写推荐。
-                        模型约 ~250 MB，首次使用需下载。
-                      </div>
-                      <div className="grid gap-3">
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs text-neutral-400">模型目录</span>
-                          <ActionButton onClick={openParaformerDir}>
-                            <FolderOpen className="mr-1 inline h-3.5 w-3.5" />
-                            打开模型目录
-                          </ActionButton>
-                        </div>
-                        <ToggleRow
-                          title="使用 GPU"
-                          desc="启用 ONNX Runtime GPU provider (需要相应运行时)"
-                          active={config.asr.paraformer.use_gpu}
-                          onToggle={() =>
-                            updateConfig("asr", {
-                              ...config.asr,
-                              paraformer: {
-                                ...config.asr.paraformer,
-                                use_gpu: !config.asr.paraformer.use_gpu,
-                              },
-                            })
-                          }
-                        />
-                      </div>
-
-                      <div className="mt-4 flex items-center gap-3">
-                        <PrimaryButton
-                          onClick={handleDownloadParaformer}
-                          disabled={modelDownload.active}
-                        >
-                          {modelDownload.active
-                            ? "下载中…"
-                            : pfPresent
-                              ? "重新下载"
-                              : "下载模型"}
-                        </PrimaryButton>
-                        {modelDownload.active && (
-                          <span className="truncate text-xs text-neutral-500">
-                            {modelDownload.file || "正在准备…"}
-                          </span>
-                        )}
-                        {pfPresent && !modelDownload.active && (
                           <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-700">
                             ✓ 已下载
                           </span>

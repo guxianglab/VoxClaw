@@ -4,9 +4,9 @@
 //! audio callback delivers arbitrary chunk sizes (Windows WASAPI often hands
 //! out 480 samples @ 48 kHz), so a naive caller that zero-pads partial frames
 //! and emits the whole padded output time-stretches the stream and inserts a
-//! silence gap after every real-audio burst. Streaming ASR (Zipformer /
-//! Paraformer) decodes such a choppy feature sequence by re-emitting tokens —
-//! the repeated syllables users see ("这这个", "星星星星").
+//! silence gap after every real-audio burst. Streaming ASR (Zipformer)
+//! decodes such a choppy feature sequence by re-emitting tokens — the repeated
+//! syllables users see ("这这个", "星星星星").
 //!
 //! This wrapper buffers partial input frames between calls, emits output only
 //! for complete frames, and `flush()` trims the final partial frame to its

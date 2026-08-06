@@ -5,7 +5,7 @@
 //! mechanical once Mandarin accuracy is validated.
 //!
 //! ```ignore
-//! // Intended implementation outline (mirrors ParaformerProvider):
+//! // Intended implementation outline (mirrors ZipformerProvider):
 //! //
 //! // pub struct MoonshineProvider { /* moonshine_rs recognizer handle */ }
 //! //

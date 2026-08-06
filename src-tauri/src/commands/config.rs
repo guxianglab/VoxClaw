@@ -11,13 +11,18 @@ pub fn take_runtime_notice(state: tauri::State<StorageState>) -> Option<String> 
     state.take_runtime_notice()
 }
 
+/// Returns `Ok(None)` on a clean save. When the selected local engine's model
+/// isn't downloaded yet, returns `Ok(Some(notice))`: the config IS persisted
+/// (the engine choice is remembered) but the previous provider keeps running
+/// until the download finishes, so the frontend can prompt instead of showing
+/// a hard save failure.
 #[tauri::command]
 pub fn save_config(
     state: tauri::State<StorageState>,
     listener: tauri::State<InputListenerState>,
     asr: tauri::State<AsrState>,
     config: AppConfig,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     let previous = state.load_config();
 
     // Update listener flags immediately (hot-reload)
@@ -32,6 +37,8 @@ pub fn save_config(
     // persisting so that a failure (e.g. lock held by an active session, or ONNX
     // Runtime refusing to re-init) leaves the on-disk config untouched — the UI
     // and the persisted state stay consistent, and the user gets a real error.
+    // The one exception is a missing local model: the engine can't load yet,
+    // but persisting the choice is still correct, so we save + return a notice.
     let asr_changed = !asr_config_eq(&previous.asr, &config.asr)
         || !proxy_config_eq(&previous.proxy, &config.proxy);
     if asr_changed {
@@ -42,6 +49,11 @@ pub fn save_config(
                     return Err(err.to_string());
                 }
             }
+            Err(crate::asr::ProviderBuildError::ModelMissing(notice)) => {
+                eprintln!("[CONFIG] ASR provider deferred (model missing): {notice}");
+                state.save_config(&config).map_err(|e| e.to_string())?;
+                return Ok(Some(notice));
+            }
             Err(err) => {
                 eprintln!("[CONFIG] ASR provider rebuild failed: {err}");
                 return Err(err.to_string());
@@ -49,7 +61,8 @@ pub fn save_config(
         }
     }
 
-    state.save_config(&config).map_err(|e| e.to_string())
+    state.save_config(&config).map_err(|e| e.to_string())?;
+    Ok(None)
 }
 
 fn asr_config_eq(a: &crate::storage::AsrConfig, b: &crate::storage::AsrConfig) -> bool {

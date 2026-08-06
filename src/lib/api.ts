@@ -55,8 +55,7 @@ export interface OnlineAsrConfig {
 export type AsrProviderKind =
     | "volcengine"
     | "sense_voice_onnx"
-    | "zipformer_streaming"
-    | "paraformer_streaming";
+    | "zipformer_streaming";
 
 export interface SenseVoiceOnnxConfig {
     model_dir: string;
@@ -73,16 +72,9 @@ export interface AsrConfig {
     volcengine: OnlineAsrConfig;
     sensevoice: SenseVoiceOnnxConfig;
     zipformer: ZipformerStreamingConfig;
-    paraformer: ParaformerStreamingConfig;
 }
 
 export interface ZipformerStreamingConfig {
-    model_dir: string;
-    enable_endpoint: boolean;
-    use_gpu: boolean;
-}
-
-export interface ParaformerStreamingConfig {
     model_dir: string;
     enable_endpoint: boolean;
     use_gpu: boolean;
@@ -277,7 +269,7 @@ export interface MeetingLlmProgressEvent {
 export const api = {
     getConfig: () => invoke<AppConfig>("get_config"),
     takeRuntimeNotice: () => invoke<string | null>("take_runtime_notice"),
-    saveConfig: (config: AppConfig) => invoke("save_config", { config }),
+    saveConfig: (config: AppConfig) => invoke<string | null>("save_config", { config }),
     getHistory: () => invoke<HistoryItem[]>("get_history"),
     clearHistory: () => invoke("clear_history"),
     deleteHistoryItem: (id: string) => invoke("delete_history_item", { id }),
@@ -296,11 +288,6 @@ export const api = {
     getZipformerDefaultDir: () => invoke<string>("get_zipformer_default_dir"),
     downloadZipformerModel: (modelDir?: string) =>
         invoke<string>("download_zipformer_model", { modelDir: modelDir ?? null }),
-    checkParaformerModelPresent: (modelDir: string) =>
-        invoke<boolean>("check_paraformer_model_present", { modelDir }),
-    getParaformerDefaultDir: () => invoke<string>("get_paraformer_default_dir"),
-    downloadParaformerModel: (modelDir?: string) =>
-        invoke<string>("download_paraformer_model", { modelDir: modelDir ?? null }),
     getInputDevices: () => invoke<AudioDevice[]>("get_input_devices"),
     getCurrentInputDevice: () => invoke<string>("get_current_input_device"),
     switchInputDevice: (deviceId: string) => invoke("switch_input_device", { deviceId }),

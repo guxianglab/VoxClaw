@@ -9,14 +9,18 @@
 //! module and be wired into [`build_provider`].
 
 use anyhow::{anyhow, Result};
+use std::error::Error;
+use std::fmt;
+use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 
-use crate::storage::{AsrConfig, AsrProviderKind, ProxyConfig};
+use crate::storage::{
+    AsrConfig, AsrProviderKind, ProxyConfig, SenseVoiceOnnxConfig, ZipformerStreamingConfig,
+};
 
 pub mod volcengine;
 pub mod sensevoice;
 pub mod zipformer;
-pub mod paraformer;
 pub mod resampler;
 
 // ---------------------------------------------------------------------------
@@ -77,33 +81,86 @@ pub trait AsrSession: Send {
 // Factory
 // ---------------------------------------------------------------------------
 
-pub fn build_provider(config: &AsrConfig, proxy: &ProxyConfig) -> Result<Arc<dyn AsrProvider>> {
+/// Why building a provider failed. `ModelMissing` is *recoverable*: the user
+/// simply hasn't downloaded the model yet. Callers (e.g. `save_config`) should
+/// persist the config anyway — the engine choice is remembered — and keep the
+/// previous provider running until the model download finishes, instead of
+/// treating it as a hard save failure.
+#[derive(Debug)]
+pub enum ProviderBuildError {
+    /// A local engine was selected but its model is not downloaded yet.
+    ModelMissing(String),
+    /// Any other failure (ONNX Runtime, corrupted files, etc.).
+    Other(String),
+}
+
+impl fmt::Display for ProviderBuildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProviderBuildError::ModelMissing(msg) | ProviderBuildError::Other(msg) => {
+                f.write_str(msg)
+            }
+        }
+    }
+}
+
+impl Error for ProviderBuildError {}
+
+/// True when the SenseVoice model dir is configured and complete.
+fn sensevoice_model_ready(config: &SenseVoiceOnnxConfig) -> bool {
+    !config.model_dir.is_empty()
+        && sensevoice::model::is_present(Path::new(&config.model_dir))
+}
+
+/// True when the Zipformer model dir is configured and complete.
+fn zipformer_model_ready(config: &ZipformerStreamingConfig) -> bool {
+    !config.model_dir.is_empty() && zipformer::model::is_present(Path::new(&config.model_dir))
+}
+
+/// Short notice for the "engine selected but model not downloaded" case.
+fn model_missing_notice(engine: &str) -> String {
+    format!("{engine} 模型未下载，设置已保存。请在下方点击“下载模型”，下载完成后即可使用该引擎。")
+}
+
+pub fn build_provider(
+    config: &AsrConfig,
+    proxy: &ProxyConfig,
+) -> Result<Arc<dyn AsrProvider>, ProviderBuildError> {
     match config.provider {
         AsrProviderKind::Volcengine => Ok(Arc::new(volcengine::VolcengineProvider::new(
             config.volcengine.clone(),
             proxy.clone(),
         ))),
         AsrProviderKind::SenseVoiceOnnx => {
-            let provider =
-                sensevoice::SenseVoiceProvider::try_new(&config.sensevoice).map_err(|err| {
-                    anyhow!(
+            if !sensevoice_model_ready(&config.sensevoice) {
+                return Err(ProviderBuildError::ModelMissing(model_missing_notice(
+                    "SenseVoice",
+                )));
+            }
+            let provider = sensevoice::SenseVoiceProvider::try_new(&config.sensevoice).map_err(
+                |err| {
+                    ProviderBuildError::Other(anyhow!(
                         "SenseVoice 离线引擎加载失败: {err}。请检查模型文件是否存在，以及 onnxruntime.dll 是否可用。"
                     )
-                })?;
+                    .to_string())
+                },
+            )?;
             Ok(Arc::new(provider))
         }
         AsrProviderKind::ZipformerStreaming => {
-            let provider =
-                zipformer::ZipformerProvider::try_new(&config.zipformer).map_err(|err| {
-                    anyhow!("Zipformer 流式引擎加载失败: {err}。请检查模型文件是否存在。")
-                })?;
-            Ok(Arc::new(provider))
-        }
-        AsrProviderKind::ParaformerStreaming => {
-            let provider =
-                paraformer::ParaformerProvider::try_new(&config.paraformer).map_err(|err| {
-                    anyhow!("Paraformer 流式引擎加载失败: {err}。请检查模型文件是否存在。")
-                })?;
+            if !zipformer_model_ready(&config.zipformer) {
+                return Err(ProviderBuildError::ModelMissing(model_missing_notice(
+                    "Zipformer",
+                )));
+            }
+            let provider = zipformer::ZipformerProvider::try_new(&config.zipformer).map_err(
+                |err| {
+                    ProviderBuildError::Other(anyhow!(
+                        "Zipformer 流式引擎加载失败: {err}。请检查模型文件是否存在。"
+                    )
+                    .to_string())
+                },
+            )?;
             Ok(Arc::new(provider))
         }
     }

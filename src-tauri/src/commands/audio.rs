@@ -23,12 +23,6 @@ pub fn get_asr_status(state: tauri::State<StorageState>) -> Result<crate::state:
                 &config.asr.zipformer.model_dir,
             ))
         }
-        crate::storage::AsrProviderKind::ParaformerStreaming => {
-            !config.asr.paraformer.model_dir.is_empty()
-            && crate::asr::paraformer::model::is_present(std::path::Path::new(
-                &config.asr.paraformer.model_dir,
-            ))
-        }
     };
     Ok(crate::state::AsrStatus { configured })
 }
@@ -189,85 +183,6 @@ pub async fn download_zipformer_model<R: Runtime>(
     if matches!(
         config.asr.provider,
         crate::storage::AsrProviderKind::ZipformerStreaming
-    ) {
-        let provider = crate::asr::build_provider(&config.asr, &config.proxy)
-            .map_err(|e| e.to_string())?;
-        asr.replace(provider).map_err(|e| {
-            format!(
-                "{e}\n模型已下载并保存，但未能立即加载。请停止录音/会议后重试，或重启应用。"
-            )
-        })?;
-    }
-
-    Ok(dir.display().to_string())
-}
-
-/// Check whether the Paraformer streaming model exists under the given dir.
-#[tauri::command]
-pub fn check_paraformer_model_present(model_dir: String) -> bool {
-    if model_dir.is_empty() {
-        return false;
-    }
-    crate::asr::paraformer::model::is_present(std::path::Path::new(&model_dir))
-}
-
-/// Default model directory for Paraformer (`<app_data>/models/<archive>`).
-#[tauri::command]
-pub fn get_paraformer_default_dir<R: Runtime>(app: AppHandle<R>) -> Result<String, String> {
-    let parent = zipformer_default_parent_dir(&app)?;
-    Ok(parent
-        .join(crate::asr::paraformer::download::ARCHIVE_DIR_NAME)
-        .display()
-        .to_string())
-}
-
-/// Same parent-dir normalization as Zipformer, for the Paraformer archive.
-fn normalize_paraformer_parent(model_dir: Option<String>) -> Option<std::path::PathBuf> {
-    match model_dir {
-        Some(d) if !d.is_empty() => {
-            let p = std::path::PathBuf::from(&d);
-            let is_target = p
-                .file_name()
-                .map(|n| n.to_string_lossy() == crate::asr::paraformer::download::ARCHIVE_DIR_NAME)
-                .unwrap_or(false);
-            if is_target {
-                p.parent().map(|parent| parent.to_path_buf()).or(Some(p))
-            } else {
-                Some(p)
-            }
-        }
-        _ => None,
-    }
-}
-
-/// Download and extract the streaming Paraformer model. Emits
-/// `asr_model_download` progress events. Returns the model directory path.
-/// If Paraformer is the active provider, rebuilds it so dictation picks up
-/// the model without a restart.
-#[tauri::command]
-pub async fn download_paraformer_model<R: Runtime>(
-    app: AppHandle<R>,
-    model_dir: Option<String>,
-    storage: tauri::State<'_, StorageState>,
-    asr: tauri::State<'_, crate::state::AsrState>,
-) -> Result<String, String> {
-    let parent = match normalize_paraformer_parent(model_dir) {
-        Some(p) => p,
-        None => zipformer_default_parent_dir(&app)?, // same models/ parent dir
-    };
-    let proxy = storage.load_config().proxy;
-    let dir = crate::asr::paraformer::download::download_paraformer_model(&app, parent, proxy)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    // Persist the path and rebuild the provider if Paraformer is active.
-    let mut config = storage.load_config();
-    config.asr.paraformer.model_dir = dir.display().to_string();
-    storage.save_config(&config).map_err(|e| e.to_string())?;
-
-    if matches!(
-        config.asr.provider,
-        crate::storage::AsrProviderKind::ParaformerStreaming
     ) {
         let provider = crate::asr::build_provider(&config.asr, &config.proxy)
             .map_err(|e| e.to_string())?;
