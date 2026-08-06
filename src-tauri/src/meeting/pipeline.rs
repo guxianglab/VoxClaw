@@ -9,8 +9,8 @@ use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use rubato::{FastFixedIn, PolynomialDegree, Resampler};
 
+use crate::asr::resampler::StreamingResampler16k;
 use crate::asr::sensevoice::provider::SenseVoiceProvider;
 use crate::asr::sensevoice::vad::{VadEndpointer, VadEndpointerConfig, VadSegment};
 use crate::asr::TranscriptSegment;
@@ -93,7 +93,7 @@ pub fn run_pipeline(
 
     let mut acc = SegmentAccumulator::new();
     let mut resampler = if needs_resample {
-        Some(Resampler16k::new(sample_rate)?)
+        Some(StreamingResampler16k::new(sample_rate)?)
     } else {
         None
     };
@@ -133,7 +133,23 @@ pub fn run_pipeline(
         }
     }
 
-    // EOF: flush the final in-progress segment.
+    // EOF: flush the resampler's carry-over tail, then the final in-progress segment.
+    if let Some(r) = resampler.as_mut() {
+        let tail = r.flush();
+        if !tail.is_empty() {
+            let completed = endpointer.feed(&tail);
+            for seg in completed {
+                let _ = process_segment(
+                    &provider,
+                    &mut acc,
+                    &seg,
+                    &on_segment,
+                    &prev_tail,
+                    &prev_text,
+                );
+            }
+        }
+    }
     for seg in endpointer.flush() {
         let _ = process_segment(
             &provider,
@@ -245,53 +261,6 @@ fn dedup_overlap(current: &str, prev_text: &str) -> String {
         curr_chars[best_len..].iter().collect::<String>().trim_start().to_string()
     } else {
         current.to_string()
-    }
-}
-
-// --- Resampler (rubato, mirrors sensevoice/provider.rs) ----------------------
-
-struct Resampler16k {
-    resampler: FastFixedIn<f32>,
-    chunk: usize,
-}
-
-impl Resampler16k {
-    fn new(from_sr: u32) -> Result<Self> {
-        let ratio = TARGET_SR as f64 / from_sr as f64;
-        let chunk = 1024usize;
-        let resampler = FastFixedIn::<f32>::new(
-            ratio,
-            1.0,
-            PolynomialDegree::Septic,
-            chunk,
-            1,
-        )
-        .map_err(|e| anyhow!("pipeline resampler init: {e}"))?;
-        Ok(Self { resampler, chunk })
-    }
-
-    fn process(&mut self, samples: &[f32]) -> Vec<f32> {
-        let mut out = Vec::new();
-        let mut idx = 0;
-        let mut input_buf: [Vec<f32>; 1] = [Vec::with_capacity(self.chunk)];
-        while idx + self.chunk <= samples.len() {
-            input_buf[0].clear();
-            input_buf[0].extend_from_slice(&samples[idx..idx + self.chunk]);
-            if let Ok(processed) = self.resampler.process(&input_buf, None) {
-                out.extend_from_slice(&processed[0]);
-            }
-            idx += self.chunk;
-        }
-        // tail pad
-        if idx < samples.len() {
-            input_buf[0].clear();
-            input_buf[0].extend_from_slice(&samples[idx..]);
-            input_buf[0].resize(self.chunk, 0.0);
-            if let Ok(processed) = self.resampler.process(&input_buf, None) {
-                out.extend_from_slice(&processed[0]);
-            }
-        }
-        out
     }
 }
 

@@ -17,6 +17,7 @@ pub mod volcengine;
 pub mod sensevoice;
 pub mod zipformer;
 pub mod paraformer;
+pub mod resampler;
 
 // ---------------------------------------------------------------------------
 // Trait surface

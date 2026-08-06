@@ -11,12 +11,12 @@ use std::sync::Arc;
 use std::thread;
 
 use anyhow::{anyhow, Result};
-use rubato::{FastFixedIn, PolynomialDegree, Resampler};
 use sherpa_onnx::{OnlineRecognizer, OnlineRecognizerConfig};
 
 use crate::asr::{
     AsrCapabilities, AsrProvider, AsrSession, AsrStreamParams, TranscriptSegment,
 };
+use crate::asr::resampler::StreamingResampler16k;
 use crate::asr::zipformer::model;
 use crate::storage::ZipformerStreamingConfig;
 
@@ -136,7 +136,7 @@ impl ZipformerSession {
 
         let needs_resample = (sample_rate as i32 - TARGET_SR).abs() >= 1;
         let mut resampler = if needs_resample {
-            Some(Self::build_resampler(sample_rate)?)
+            Some(StreamingResampler16k::new(sample_rate)?)
         } else {
             None
         };
@@ -154,7 +154,7 @@ impl ZipformerSession {
                 while let Ok(chunk) = audio_rx.recv() {
                     // Resample to 16k if needed.
                     let mono_16k = match resampler.as_mut() {
-                        Some(r) => Self::resample(r, &chunk),
+                        Some(r) => r.process(&chunk),
                         None => chunk,
                     };
                     if mono_16k.is_empty() {
@@ -213,7 +213,17 @@ impl ZipformerSession {
                     total_ms += (mono_16k.len() as f64 / TARGET_SR as f64 * 1000.0) as u64;
                 }
 
-                // EOF: flush any remaining partial as a final utterance.
+                // EOF: feed the resampler's carry-over tail, then flush any
+                // remaining partial as a final utterance.
+                if let Some(r) = resampler.as_mut() {
+                    let tail = r.flush();
+                    if !tail.is_empty() {
+                        stream.accept_waveform(TARGET_SR, &tail);
+                        while recognizer.is_ready(&stream) {
+                            recognizer.decode(&stream);
+                        }
+                    }
+                }
                 stream.input_finished();
                 while recognizer.is_ready(&stream) {
                     recognizer.decode(&stream);
@@ -248,36 +258,6 @@ impl ZipformerSession {
             .map_err(|e| anyhow!("failed to spawn zipformer thread: {e}"))?;
 
         Ok((handle, collected))
-    }
-
-    fn build_resampler(from_sr: u32) -> Result<FastFixedIn<f32>> {
-        let ratio = TARGET_SR as f64 / from_sr as f64;
-        FastFixedIn::<f32>::new(ratio, 1.0, PolynomialDegree::Septic, 1024, 1)
-            .map_err(|e| anyhow!("zipformer resampler init: {e}"))
-    }
-
-    fn resample(resampler: &mut FastFixedIn<f32>, samples: &[f32]) -> Vec<f32> {
-        let chunk = 1024usize;
-        let mut out = Vec::new();
-        let mut idx = 0;
-        let mut input_buf: [Vec<f32>; 1] = [Vec::with_capacity(chunk)];
-        while idx + chunk <= samples.len() {
-            input_buf[0].clear();
-            input_buf[0].extend_from_slice(&samples[idx..idx + chunk]);
-            if let Ok(processed) = resampler.process(&input_buf, None) {
-                out.extend_from_slice(&processed[0]);
-            }
-            idx += chunk;
-        }
-        if idx < samples.len() {
-            input_buf[0].clear();
-            input_buf[0].extend_from_slice(&samples[idx..]);
-            input_buf[0].resize(chunk, 0.0);
-            if let Ok(processed) = resampler.process(&input_buf, None) {
-                out.extend_from_slice(&processed[0]);
-            }
-        }
-        out
     }
 }
 
