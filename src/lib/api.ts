@@ -293,10 +293,12 @@ export const api = {
         invoke<string>("download_vad_model", { modelDir }),
     checkZipformerModelPresent: (modelDir: string) =>
         invoke<boolean>("check_zipformer_model_present", { modelDir }),
+    getZipformerDefaultDir: () => invoke<string>("get_zipformer_default_dir"),
     downloadZipformerModel: (modelDir?: string) =>
         invoke<string>("download_zipformer_model", { modelDir: modelDir ?? null }),
     checkParaformerModelPresent: (modelDir: string) =>
         invoke<boolean>("check_paraformer_model_present", { modelDir }),
+    getParaformerDefaultDir: () => invoke<string>("get_paraformer_default_dir"),
     downloadParaformerModel: (modelDir?: string) =>
         invoke<string>("download_paraformer_model", { modelDir: modelDir ?? null }),
     getInputDevices: () => invoke<AudioDevice[]>("get_input_devices"),

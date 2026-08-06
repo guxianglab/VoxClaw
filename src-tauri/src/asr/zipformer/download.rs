@@ -24,7 +24,7 @@ const MODEL_URL: &str =
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20.tar.bz2";
 
 /// The directory name inside the archive (it extracts to this subfolder).
-const ARCHIVE_DIR_NAME: &str = "sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20";
+pub const ARCHIVE_DIR_NAME: &str = "sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20";
 
 /// Download and extract the streaming Zipformer model into `parent_dir`.
 /// The model files end up in `parent_dir/<ARCHIVE_DIR_NAME>/`.

@@ -1,5 +1,6 @@
 ﻿import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { AlertCircle, ChevronDown, ChevronRight, Copy, Loader2, Plus, RotateCcw, Trash2, X } from "lucide-react";
+import { AlertCircle, ChevronDown, ChevronRight, Copy, FolderOpen, Loader2, Plus, RotateCcw, Trash2, X } from "lucide-react";
+import { openPath } from "@tauri-apps/plugin-opener";
 import {
   api,
   AppConfig,
@@ -214,20 +215,13 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
       ]);
       setSvPresent(sv);
       setVadPresent(vad);
-      // Zipformer model lives in its own directory.
-      const zfDir = config?.asr.zipformer.model_dir;
-      if (zfDir) {
-        setZfPresent(await api.checkZipformerModelPresent(zfDir));
-      } else {
-        setZfPresent(false);
-      }
+      // Zipformer model lives in its own directory; fall back to the default
+      // location when no custom dir is configured so the status badge is honest.
+      const zfDir = config?.asr.zipformer.model_dir || (await api.getZipformerDefaultDir());
+      setZfPresent(await api.checkZipformerModelPresent(zfDir));
       // Paraformer model lives in its own directory.
-      const pfDir = config?.asr.paraformer.model_dir;
-      if (pfDir) {
-        setPfPresent(await api.checkParaformerModelPresent(pfDir));
-      } else {
-        setPfPresent(false);
-      }
+      const pfDir = config?.asr.paraformer.model_dir || (await api.getParaformerDefaultDir());
+      setPfPresent(await api.checkParaformerModelPresent(pfDir));
     } catch {
       /* non-fatal: leave badges as unknown */
     }
@@ -344,6 +338,16 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
       });
     }
   }, [config, saveLater]);
+
+  const openZipformerDir = useCallback(async () => {
+    const dir = config?.asr.zipformer.model_dir || (await api.getZipformerDefaultDir());
+    openPath(dir);
+  }, [config?.asr.zipformer.model_dir]);
+
+  const openParaformerDir = useCallback(async () => {
+    const dir = config?.asr.paraformer.model_dir || (await api.getParaformerDefaultDir());
+    openPath(dir);
+  }, [config?.asr.paraformer.model_dir]);
 
   if (!isOpen || !config) return null;
 
@@ -974,17 +978,13 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
                         模型约 ~300 MB，首次使用需下载。
                       </div>
                       <div className="grid gap-3">
-                        <Field
-                          label="模型目录"
-                          value={config.asr.zipformer.model_dir}
-                          placeholder="留空将下载到默认位置"
-                          onChange={(value) =>
-                            updateConfig("asr", {
-                              ...config.asr,
-                              zipformer: { ...config.asr.zipformer, model_dir: value },
-                            })
-                          }
-                        />
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs text-neutral-400">模型目录</span>
+                          <ActionButton onClick={openZipformerDir}>
+                            <FolderOpen className="mr-1 inline h-3.5 w-3.5" />
+                            打开模型目录
+                          </ActionButton>
+                        </div>
                         <ToggleRow
                           title="使用 GPU"
                           desc="启用 ONNX Runtime GPU provider (需要相应运行时)"
@@ -1046,17 +1046,13 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
                         模型约 ~250 MB，首次使用需下载。
                       </div>
                       <div className="grid gap-3">
-                        <Field
-                          label="模型目录"
-                          value={config.asr.paraformer.model_dir}
-                          placeholder="留空将下载到默认位置"
-                          onChange={(value) =>
-                            updateConfig("asr", {
-                              ...config.asr,
-                              paraformer: { ...config.asr.paraformer, model_dir: value },
-                            })
-                          }
-                        />
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs text-neutral-400">模型目录</span>
+                          <ActionButton onClick={openParaformerDir}>
+                            <FolderOpen className="mr-1 inline h-3.5 w-3.5" />
+                            打开模型目录
+                          </ActionButton>
+                        </div>
                         <ToggleRow
                           title="使用 GPU"
                           desc="启用 ONNX Runtime GPU provider (需要相应运行时)"

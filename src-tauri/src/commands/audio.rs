@@ -127,6 +127,40 @@ fn zipformer_default_parent_dir<R: Runtime>(app: &AppHandle<R>) -> Result<std::p
     Ok(base.join("models"))
 }
 
+/// Default model directory for Zipformer (`<app_data>/models/<archive>`).
+#[tauri::command]
+pub fn get_zipformer_default_dir<R: Runtime>(app: AppHandle<R>) -> Result<String, String> {
+    let parent = zipformer_default_parent_dir(&app)?;
+    Ok(parent
+        .join(crate::asr::zipformer::download::ARCHIVE_DIR_NAME)
+        .display()
+        .to_string())
+}
+
+/// Normalize the user-provided dir to the *parent* directory that the
+/// downloader extracts into. `model_dir` may be either:
+///   - the parent dir itself (first-time custom location), or
+///   - the final model dir returned by a previous download (basename equals
+///     the archive dir name) — strip it back to its parent so we never
+///     re-download the model into a nested duplicate folder.
+fn normalize_zipformer_parent(model_dir: Option<String>) -> Option<std::path::PathBuf> {
+    match model_dir {
+        Some(d) if !d.is_empty() => {
+            let p = std::path::PathBuf::from(&d);
+            let is_target = p
+                .file_name()
+                .map(|n| n.to_string_lossy() == crate::asr::zipformer::download::ARCHIVE_DIR_NAME)
+                .unwrap_or(false);
+            if is_target {
+                p.parent().map(|parent| parent.to_path_buf()).or(Some(p))
+            } else {
+                Some(p)
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Download and extract the streaming Zipformer model. Emits
 /// `asr_model_download` progress events. Returns the model directory path.
 /// If Zipformer is the active provider, rebuilds it so dictation picks up
@@ -138,9 +172,9 @@ pub async fn download_zipformer_model<R: Runtime>(
     storage: tauri::State<'_, StorageState>,
     asr: tauri::State<'_, crate::state::AsrState>,
 ) -> Result<String, String> {
-    let parent = match model_dir {
-        Some(d) if !d.is_empty() => std::path::PathBuf::from(d),
-        _ => zipformer_default_parent_dir(&app)?,
+    let parent = match normalize_zipformer_parent(model_dir) {
+        Some(p) => p,
+        None => zipformer_default_parent_dir(&app)?,
     };
     let proxy = storage.load_config().proxy;
     let dir = crate::asr::zipformer::download::download_zipformer_model(&app, parent, proxy)
@@ -177,6 +211,35 @@ pub fn check_paraformer_model_present(model_dir: String) -> bool {
     crate::asr::paraformer::model::is_present(std::path::Path::new(&model_dir))
 }
 
+/// Default model directory for Paraformer (`<app_data>/models/<archive>`).
+#[tauri::command]
+pub fn get_paraformer_default_dir<R: Runtime>(app: AppHandle<R>) -> Result<String, String> {
+    let parent = zipformer_default_parent_dir(&app)?;
+    Ok(parent
+        .join(crate::asr::paraformer::download::ARCHIVE_DIR_NAME)
+        .display()
+        .to_string())
+}
+
+/// Same parent-dir normalization as Zipformer, for the Paraformer archive.
+fn normalize_paraformer_parent(model_dir: Option<String>) -> Option<std::path::PathBuf> {
+    match model_dir {
+        Some(d) if !d.is_empty() => {
+            let p = std::path::PathBuf::from(&d);
+            let is_target = p
+                .file_name()
+                .map(|n| n.to_string_lossy() == crate::asr::paraformer::download::ARCHIVE_DIR_NAME)
+                .unwrap_or(false);
+            if is_target {
+                p.parent().map(|parent| parent.to_path_buf()).or(Some(p))
+            } else {
+                Some(p)
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Download and extract the streaming Paraformer model. Emits
 /// `asr_model_download` progress events. Returns the model directory path.
 /// If Paraformer is the active provider, rebuilds it so dictation picks up
@@ -188,9 +251,9 @@ pub async fn download_paraformer_model<R: Runtime>(
     storage: tauri::State<'_, StorageState>,
     asr: tauri::State<'_, crate::state::AsrState>,
 ) -> Result<String, String> {
-    let parent = match model_dir {
-        Some(d) if !d.is_empty() => std::path::PathBuf::from(d),
-        _ => zipformer_default_parent_dir(&app)?, // same models/ parent dir
+    let parent = match normalize_paraformer_parent(model_dir) {
+        Some(p) => p,
+        None => zipformer_default_parent_dir(&app)?, // same models/ parent dir
     };
     let proxy = storage.load_config().proxy;
     let dir = crate::asr::paraformer::download::download_paraformer_model(&app, parent, proxy)

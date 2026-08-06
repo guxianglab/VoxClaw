@@ -27,7 +27,7 @@ const MODEL_URL: &str =
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-paraformer-bilingual-zh-en.tar.bz2";
 
 /// The directory name inside the archive (it extracts to this subfolder).
-const ARCHIVE_DIR_NAME: &str = "sherpa-onnx-streaming-paraformer-bilingual-zh-en";
+pub const ARCHIVE_DIR_NAME: &str = "sherpa-onnx-streaming-paraformer-bilingual-zh-en";
 
 /// Download and extract the streaming Paraformer model into `parent_dir`.
 /// The model files end up in `parent_dir/<ARCHIVE_DIR_NAME>/`.
