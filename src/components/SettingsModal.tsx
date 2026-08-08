@@ -17,7 +17,7 @@ import {
 
 interface SettingsModalProps {
   isOpen: boolean;
-  onClose: () => void;
+  onClose: (skip?: boolean) => void;
   isFirstSetup?: boolean;
 }
 
@@ -1434,7 +1434,15 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
                 <p className="mt-1 text-sm text-neutral-500">请先选择输入设备，并填写语音识别和语言模型的凭证。</p>
               </div>
             </div>
-            <div className="mt-6 flex justify-end">
+            <div className="mt-6 flex justify-end gap-2">
+              <ActionButton
+                onClick={async () => {
+                  await flush();
+                  onClose(true);
+                }}
+              >
+                暂不设置
+              </ActionButton>
               <PrimaryButton onClick={() => setShowWarning(false)}>继续设置</PrimaryButton>
             </div>
           </div>

@@ -74,22 +74,17 @@ function App() {
     return () => window.clearTimeout(timeout);
   }, [voiceFeedback]);
 
-  const handleSettingsClose = () => {
-    if (needsSetup) {
-      Promise.all([api.getConfig(), api.getAsrStatus()]).then(([config, asrStatus]) => {
-        const hasDevice = config.input_device && config.input_device !== "";
-        const hasAsr = asrStatus.configured;
-        setAsrConfigured(hasAsr);
-        if (hasDevice && hasAsr) {
-          setNeedsSetup(false);
-          setIsSettingsOpen(false);
-        }
-      });
-    } else {
-      api.getAsrStatus().then(status => setAsrConfigured(status.configured));
-      api.getConfig().then((config) => setContinuousMode(config.agent_config?.continuous_mode ?? false));
-      setIsSettingsOpen(false);
-    }
+  const handleSettingsClose = (skip = false) => {
+    Promise.all([api.getConfig(), api.getAsrStatus()]).then(([config, asrStatus]) => {
+      const hasDevice = config.input_device && config.input_device !== "";
+      const hasAsr = asrStatus.configured;
+      setAsrConfigured(hasAsr);
+      setContinuousMode(config.agent_config?.continuous_mode ?? false);
+      if ((hasDevice && hasAsr) || skip) {
+        setNeedsSetup(false);
+        setIsSettingsOpen(false);
+      }
+    });
   };
 
   return (
