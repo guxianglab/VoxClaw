@@ -1,15 +1,11 @@
-//! Meeting mode — long-form recording with ASR transcription.
+//! Meeting mode — long-form recording with live transcription and an LLM
+//! summary at the end.
 //!
-//! Independent from dictation: separate audio stream lifecycle, separate
-//! state machine, controlled by explicit start/stop commands from the
-//! frontend (not by the global hotkey).
-//!
-//! Phase 3 ships **mic-only** capture. WASAPI loopback (system audio) mix
-//! is wired in [`audio::MeetingAudioConfig`] but currently records mic only;
-//! a follow-up will add the dual-stream mixer.
+//! Independent from dictation: its own audio capture (microphone mixed with
+//! system audio via WASAPI loopback), its own streaming ASR session on the
+//! currently selected engine, controlled by explicit start/stop commands.
 
 pub mod audio;
-pub mod llm;
 pub mod loopback;
-pub mod pipeline;
 pub mod session;
+pub mod summary;
