@@ -7,8 +7,8 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 use crate::asr;
 use crate::input_listener;
 use crate::state::{
-    DictationIntent, PendingFinalizeState, ProcessingState, LlmCancelState, AgentCancelState,
-    SkillExecutionState, StorageState, TRANSCRIPTION_SEQ,
+    AgentCancelState, DictationIntent, LlmCancelState, PendingFinalizeState, ProcessingState,
+    StorageState, TRANSCRIPTION_SEQ,
 };
 use crate::storage::HistoryItem;
 use crate::window;
@@ -101,9 +101,8 @@ pub fn process_transcription<R: Runtime>(
             match llm_result {
                 Some(Ok(outcome)) => {
                     println!(
-                        "[TRANSCRIPTION] #{} scene='{}' fallback={}",
+                        "[TRANSCRIPTION] #{} fallback={}",
                         seq_id,
-                        outcome.applied_scene,
                         outcome.fallback_reason.is_some()
                     );
                     if let Some(reason) = outcome.fallback_reason.clone() {
@@ -171,6 +170,7 @@ pub fn process_transcription_for_agent<R: Runtime>(
     use crate::agent;
     use crate::agent::error::AgentError;
     use crate::state::preview_text;
+    use tokio_util::sync::CancellationToken;
 
     if text.trim().is_empty() {
         println!("[AGENT] #{} empty, skipping", seq_id);
@@ -200,34 +200,11 @@ pub fn process_transcription_for_agent<R: Runtime>(
         let _guard = ProcessingGuard(processing_clone);
         let app_dir = app_handle_clone.path().app_data_dir().unwrap_or_else(|_| std::path::PathBuf::from("data"));
 
-        if llm_config.base_url.trim().is_empty() || llm_config.api_key.trim().is_empty() {
-            eprintln!("[AGENT] #{} LLM not configured, falling back to plain dictation", seq_id);
-            // Fall back to plain text paste
-            let id = seq_id;
-            tokio::task::spawn_blocking(move || {
-                output_text(&text, id);
-            })
-            .await
-            .ok();
-            return;
-        }
-
-        // Resolve provider config: agent_config fields fall back to llm_config fields
-        let base_url = if agent_config.provider_base_url.is_empty() { &llm_config.base_url } else { &agent_config.provider_base_url };
-        let api_key = if agent_config.provider_api_key.is_empty() { &llm_config.api_key } else { &agent_config.provider_api_key };
-        let model = if agent_config.provider_model.is_empty() { &llm_config.model } else { &agent_config.provider_model };
-        let provider_type = if agent_config.provider_type.is_empty() { "openai_compatible" } else { &agent_config.provider_type };
-
-        println!("[AGENT] #{} LLM config: provider_type='{}', base_url='{}', model='{}'", seq_id, provider_type, base_url, model);
-
-        // Build the agent using the new framework
-        let provider = match agent::create_provider(provider_type, base_url, api_key, model, &proxy_config) {
-            Ok(p) => {
-                println!("[AGENT] #{} Provider created successfully", seq_id);
-                p
-            }
+        // Without a configured LLM, fall back to plain dictation.
+        let provider = match crate::llm::create_provider(&llm_config, &proxy_config) {
+            Ok(p) => p,
             Err(e) => {
-                eprintln!("[AGENT] #{} Failed to create provider: {}", seq_id, e);
+                eprintln!("[AGENT] #{} {}; falling back to plain dictation", seq_id, e);
                 let id = seq_id;
                 tokio::task::spawn_blocking(move || { output_text(&text, id); })
                     .await
@@ -244,17 +221,10 @@ pub fn process_transcription_for_agent<R: Runtime>(
             budget_tokens: None,
         };
 
-        // Parse execution mode
-        let execution_mode = match agent_config.execution_mode.as_str() {
-            "parallel" => agent::tool::ExecutionMode::Parallel,
-            _ => agent::tool::ExecutionMode::Sequential,
-        };
-
         let mut builder = agent::AgentBuilder::new()
             .provider(provider)
-            .model(model)
-            .thinking(thinking)
-            .execution_mode(execution_mode);
+            .model(&llm_config.model)
+            .thinking(thinking);
 
         // Assemble system prompt: base/custom + persistent context + history
         let system_prompt = {
@@ -304,19 +274,64 @@ pub fn process_transcription_for_agent<R: Runtime>(
             builder = builder.tool(tool);
         }
 
-        // Add logging hook always, safety hook for rule evaluation
-        builder = builder.hook(Box::new(agent::tool::hooks::LoggingHook));
-        let shared_safety = app_handle_clone.state::<crate::SafetySharedState>();
-        let safety_hook = agent::tool::hooks::SafetyHook::new(
-            shared_safety.rules.clone(),
-            agent_config.default_safety_policy.clone(),
-            app_handle_clone.clone(),
-            shared_safety.pending.clone(),
-        );
-
-        builder = builder.hook(Box::new(safety_hook));
-
         builder = builder.max_iterations(max_iterations as u32);
+
+        // Cancellation: create the token up front and register it in the
+        // shared cancel slot (frontend stop button / hotkey abort) before the
+        // agent starts, then inject it so cancellation interrupts the
+        // provider mid-stream.
+        let cancel_token = CancellationToken::new();
+        {
+            if let Ok(mut guard) = agent_cancel_clone.lock() {
+                *guard = Some(cancel_token.clone());
+            }
+        }
+        builder = builder.cancellation_token(cancel_token);
+
+        // ------------------------------------------------------------------
+        // Session wiring:
+        // - continuous_mode=true  -> reuse `storage.current_session_id` (or
+        //   create one), seed the conversation by replaying the log, and
+        //   persist new messages through the store attached to the agent.
+        // - continuous_mode=false -> always create a fresh session.
+        // The store is opened once and kept by the agent actor; appends are
+        // single writes against a held-open handle (no per-message reopen).
+        // ------------------------------------------------------------------
+        let storage_for_session = app_handle_clone.state::<StorageState>();
+        let mut seed_messages: Vec<agent::core::message::AgentMessage> = Vec::new();
+        let existing_store = if agent_config.continuous_mode {
+            storage_for_session
+                .current_session_id()
+                .and_then(|existing| agent::session::SessionStore::open(&app_dir, &existing).ok())
+        } else {
+            None
+        };
+        let store = match existing_store {
+            Some(s) => {
+                if let Ok(prior) = s.replay_messages() {
+                    seed_messages = prior;
+                }
+                s
+            }
+            None => match agent::session::SessionStore::create(&app_dir, None, None) {
+                Ok(s) => {
+                    if agent_config.continuous_mode {
+                        storage_for_session.set_current_session_id(Some(s.session_id.clone()));
+                    }
+                    s
+                }
+                Err(e) => {
+                    eprintln!("[AGENT] #{} session create failed: {}", seq_id, e);
+                    let id = seq_id;
+                    tokio::task::spawn_blocking(move || { output_text(&text, id); })
+                        .await
+                        .ok();
+                    return;
+                }
+            },
+        };
+
+        builder = builder.session(store);
 
         let mut agent = match builder.build() {
             Ok(a) => {
@@ -332,79 +347,16 @@ pub fn process_transcription_for_agent<R: Runtime>(
                 return;
             }
         };
-
-        // Store the cancel token so external callers (e.g. frontend stop button) can abort us.
-        {
-            if let Ok(mut guard) = agent_cancel_clone.lock() {
-                *guard = Some(agent.cancellation_token());
-            }
+        if !seed_messages.is_empty() {
+            agent.seed_messages(seed_messages);
         }
 
-        // ------------------------------------------------------------------
-        // Session wiring (Phase 2):
-        // - continuous_mode=true  -> reuse `storage.current_session_id` (or create
-        //   one), seed Agent.messages by replaying the log, and persist new
-        //   messages via `set_on_message`.
-        // - continuous_mode=false -> always create a fresh session.
-        // ------------------------------------------------------------------
-        let storage_for_session = app_handle_clone.state::<StorageState>();
-        let session_id = if agent_config.continuous_mode {
-            if let Some(existing) = storage_for_session.current_session_id() {
-                if let Ok(store) = agent::session::SessionStore::open(&app_dir, &existing) {
-                    if let Ok(prior) = store.replay_messages() {
-                        if !prior.is_empty() {
-                            agent.seed_messages(prior);
-                        }
-                    }
-                    Some(existing)
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        let session_id = match session_id {
-            Some(id) => id,
-            None => {
-                let store = match agent::session::SessionStore::create(&app_dir, None, None) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        eprintln!("[AGENT] #{} session create failed: {}", seq_id, e);
-                        let id = seq_id;
-                        tokio::task::spawn_blocking(move || { output_text(&text, id); })
-                            .await
-                            .ok();
-                        return;
-                    }
-                };
-                let id = store.session_id.clone();
-                if agent_config.continuous_mode {
-                    storage_for_session.set_current_session_id(Some(id.clone()));
-                }
-                id
-            }
-        };
-
-        // Persist every appended message to the session log on a background
-        // thread (we open the file fresh each time to avoid sharing &mut state
-        // across the FnMut/Fn boundary).
-        let session_dir = app_dir.clone();
-        let session_id_for_cb = session_id.clone();
-        agent.set_on_message(move |msg| {
-            if let Ok(mut store) =
-                agent::session::SessionStore::open(&session_dir, &session_id_for_cb)
-            {
-                let _ = store.append(agent::session::SessionEntryKind::Message {
-                    message: msg.clone(),
-                });
-            }
-        });
+        // Move the agent into its own task; everything flows through the
+        // handle from here on.
+        let handle = agent.spawn();
 
         // Subscribe to events for real-time UI updates
-        let mut event_rx = agent.subscribe();
+        let mut event_rx = handle.subscribe();
         let event_handle = app_handle_clone.clone();
         tokio::spawn(async move {
             use tokio::sync::broadcast::error::RecvError;
@@ -424,7 +376,7 @@ pub fn process_transcription_for_agent<R: Runtime>(
         // Show indicator
         app_handle_clone.emit("agent_processing", true).ok();
 
-        match agent.prompt(&text).await {
+        match handle.prompt(&text).await {
             Ok(result) => {
                 // Clear the cancel token — agent is done.
                 if let Ok(mut guard) = agent_cancel_clone.lock() { *guard = None; }
@@ -539,9 +491,6 @@ pub fn begin_recording_session<R: Runtime>(
     app_handle: &AppHandle<R>,
     streaming_session: &mut Option<asr::StreamingSession>,
     intent: DictationIntent,
-    skill_mode: bool,
-    llm_cancel: LlmCancelState,
-    skill_state: SkillExecutionState,
 ) -> bool {
     use crate::state::AudioState;
     use crate::state::AsrState;
@@ -565,29 +514,9 @@ pub fn begin_recording_session<R: Runtime>(
 
     let asr = app_handle.state::<AsrState>();
     let handle = app_handle.clone();
-    let skill_session_id = if skill_mode {
-        crate::skill_engine::start_skill_execution_session(&skill_state)
-    } else {
-        0
-    };
-    match asr.start_streaming_session(
-        stream_rx,
-        sample_rate,
-        move |text| {
-            handle.emit("stream_update", &text).ok();
-            if skill_mode {
-                let seq_id = TRANSCRIPTION_SEQ.fetch_add(1, AtomicOrdering::Relaxed);
-                crate::skill_engine::spawn_skill_transcript_processing(
-                    &handle,
-                    text,
-                    llm_cancel.clone(),
-                    skill_state.clone(),
-                    skill_session_id,
-                    seq_id,
-                );
-            }
-        },
-    ) {
+    match asr.start_streaming_session(stream_rx, sample_rate, move |text| {
+        handle.emit("stream_update", &text).ok();
+    }) {
         Ok(session) => {
             *streaming_session = Some(session);
             println!(
@@ -792,69 +721,6 @@ pub fn stop_agent_recording_async<R: Runtime>(
                 eprintln!("[AGENT] Transcription error: {}", e);
                 processing.store(false, std::sync::atomic::Ordering::SeqCst);
             }
-        }
-    });
-}
-
-pub fn stop_skill_recording_async<R: Runtime>(
-    app_handle: &AppHandle<R>,
-    streaming_session: &mut Option<asr::StreamingSession>,
-    processing: ProcessingState,
-    llm_cancel: LlmCancelState,
-    skill_state: SkillExecutionState,
-    log_tag: &str,
-) {
-    let stop_started = Instant::now();
-    let (_buffer, _sample_rate) = stop_recording_now(app_handle);
-    println!(
-        "[{}] Skill capture stopped in {} ms",
-        log_tag,
-        stop_started.elapsed().as_millis()
-    );
-    window::emit_dictation_intent(app_handle, DictationIntent::None);
-    window::emit_session_complete(app_handle);
-
-    let Some(session) = streaming_session.take() else {
-        if let Some(session_id) = crate::skill_engine::current_skill_execution_session_id(&skill_state) {
-            crate::skill_engine::finish_skill_execution_session(&skill_state, session_id);
-        }
-        processing.store(false, std::sync::atomic::Ordering::SeqCst);
-        return;
-    };
-
-    let Some(skill_session_id) = crate::skill_engine::current_skill_execution_session_id(&skill_state) else {
-        processing.store(false, std::sync::atomic::Ordering::SeqCst);
-        return;
-    };
-
-    let app_handle_clone = app_handle.clone();
-    let log_tag = log_tag.to_string();
-    std::thread::spawn(move || match session.finish_and_wait() {
-        Ok(text) => {
-            app_handle_clone.emit("stream_update", text.clone()).ok();
-            let seq_id = TRANSCRIPTION_SEQ.fetch_add(1, AtomicOrdering::Relaxed);
-            let app_handle_for_async = app_handle_clone.clone();
-            let skill_state_for_async = skill_state.clone();
-            let processing_for_async = processing.clone();
-            tauri::async_runtime::spawn(async move {
-                crate::skill_engine::execute_skill_transcript(
-                    &app_handle_for_async,
-                    &text,
-                    &llm_cancel,
-                    &skill_state_for_async,
-                    skill_session_id,
-                    seq_id,
-                    true,
-                )
-                .await;
-                crate::skill_engine::finish_skill_execution_session(&skill_state_for_async, skill_session_id);
-                processing_for_async.store(false, std::sync::atomic::Ordering::SeqCst);
-            });
-        }
-        Err(e) => {
-            eprintln!("[{}] Skill final transcription error: {}", log_tag, e);
-            crate::skill_engine::finish_skill_execution_session(&skill_state, skill_session_id);
-            processing.store(false, std::sync::atomic::Ordering::SeqCst);
         }
     });
 }

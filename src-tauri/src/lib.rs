@@ -1,7 +1,6 @@
 mod agent;
 mod asr;
 mod audio;
-mod audio_enhancement;
 pub mod commands;
 mod dictation;
 mod http_client;
@@ -9,21 +8,9 @@ mod input_listener;
 pub mod keyboard;
 mod llm;
 mod meeting;
-mod skill_engine;
-mod skills;
 mod state;
 pub mod storage;
 mod window;
-
-use std::collections::HashMap;
-
-/// Shared state for safety system Tauri commands.
-pub struct SafetySharedState {
-    pub pending: Arc<std::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<agent::tool::HookDecision>>>>,
-    pub rules: Arc<tokio::sync::Mutex<Vec<storage::SafetyRule>>>,
-}
-// TODO: 流式模块暂时禁用，等待完整集成
-// mod streaming_asr;
 
 use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::{Arc, Mutex};
@@ -35,10 +22,9 @@ use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::input_listener::InputEvent;
 use crate::state::{
-    DictationIntent, DictationState, LlmCancelState, AgentCancelState, ProcessingState,
-    SkillExecutionState, StorageState, DICTATION_SESSION_SEQ,
+    AgentCancelState, DictationIntent, DictationState, LlmCancelState, ProcessingState,
+    StorageState, DICTATION_SESSION_SEQ,
 };
-use crate::storage::SkillAgentMode;
 use crate::window::{emit_dictation_intent, emit_session_complete, show_main_window};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -112,12 +98,6 @@ pub fn run() {
             let storage_service = storage::StorageService::new(app_dir.clone());
             let config = storage_service.load_config();
 
-            let safety_shared_state = SafetySharedState {
-                pending: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-                rules: Arc::new(tokio::sync::Mutex::new(config.agent_config.safety_rules.clone())),
-            };
-            app.manage(safety_shared_state);
-
             // Initialize Services
             let asr_service = match asr::build_provider(&config.asr, &config.proxy) {
                 Ok(provider) => {
@@ -176,13 +156,11 @@ pub fn run() {
             let llm_cancel_state: LlmCancelState = Arc::new(Mutex::new(None));
             // Agent cancellation state - allows cancelling running agent tasks
             let agent_cancel_state: AgentCancelState = Arc::new(Mutex::new(None));
-            let skill_execution_state: SkillExecutionState = Arc::new(Mutex::new(None));
 
             // Background Thread to handle events
             let processing_for_thread = processing_state.clone();
             let llm_cancel_for_thread = llm_cancel_state.clone();
             let agent_cancel_for_thread = agent_cancel_state.clone();
-            let skill_execution_for_thread = skill_execution_state.clone();
             let event_tx = tx.clone();
             #[allow(unreachable_code)]
             std::thread::spawn(move || {
@@ -219,9 +197,6 @@ pub fn run() {
                                         &app_handle,
                                         &mut streaming_session,
                                         intent,
-                                        false,
-                                        llm_cancel_for_thread.clone(),
-                                        skill_execution_for_thread.clone(),
                                     ) {
                                         dictation_state = DictationState::Recording {
                                             intent,
@@ -340,14 +315,14 @@ pub fn run() {
                                 }
                             }
                         }
-                        InputEvent::StartSkill => {
+                        InputEvent::StartAgent => {
                             if !matches!(dictation_state, DictationState::Idle) {
                                 continue;
                             }
 
                             if processing_for_thread.load(std::sync::atomic::Ordering::SeqCst) {
-                                dictation::cancel_pending_llm(&llm_cancel_for_thread, "SKILL");
-                                dictation::cancel_pending_agent(&agent_cancel_for_thread, "SKILL");
+                                dictation::cancel_pending_llm(&llm_cancel_for_thread, "AGENT");
+                                dictation::cancel_pending_agent(&agent_cancel_for_thread, "AGENT");
                                 std::thread::sleep(Duration::from_millis(100));
                             }
 
@@ -355,66 +330,41 @@ pub fn run() {
                                 continue;
                             }
 
-                            // Determine intent based on agent config
-                            let storage = app_handle.state::<StorageState>();
-                            let config = storage.load_config();
-                            let intent = if config.agent_config.mode == SkillAgentMode::Agent {
-                                DictationIntent::Agent
-                            } else {
-                                DictationIntent::Skill
-                            };
-
                             if dictation::begin_recording_session(
                                 &app_handle,
                                 &mut streaming_session,
-                                intent,
-                                true,
-                                llm_cancel_for_thread.clone(),
-                                skill_execution_for_thread.clone(),
+                                DictationIntent::Agent,
                             ) {
                                 dictation_state = DictationState::Recording {
-                                    intent,
+                                    intent: DictationIntent::Agent,
                                     started_at: Instant::now(),
                                 };
                             }
                         }
-                        InputEvent::StopSkill => {
-                            let recording_intent = match &dictation_state {
-                                DictationState::Recording { intent, .. } => Some(*intent),
-                                _ => None,
-                            };
-                            if recording_intent.is_none() {
+                        InputEvent::StopAgent => {
+                            if !matches!(
+                                dictation_state,
+                                DictationState::Recording { intent: DictationIntent::Agent, .. }
+                            ) {
                                 continue;
                             }
-                            let intent = recording_intent.unwrap();
 
                             dictation_state = DictationState::Idle;
 
-                            // Serialize agent/skill work against other input:
-                            // while processing is set, new triggers cancel the
+                            // Serialize agent work against other input: while
+                            // processing is set, new triggers cancel the
                             // running task instead of starting a new session.
                             processing_for_thread.store(
                                 true,
                                 std::sync::atomic::Ordering::SeqCst,
                             );
 
-                            if intent == DictationIntent::Agent {
-                                dictation::stop_agent_recording_async(
-                                    &app_handle,
-                                    &mut streaming_session,
-                                    processing_for_thread.clone(),
-                                    agent_cancel_for_thread.clone(),
-                                );
-                            } else {
-                                dictation::stop_skill_recording_async(
-                                    &app_handle,
-                                    &mut streaming_session,
-                                    processing_for_thread.clone(),
-                                    llm_cancel_for_thread.clone(),
-                                    skill_execution_for_thread.clone(),
-                                    "SKILL",
-                                );
-                            }
+                            dictation::stop_agent_recording_async(
+                                &app_handle,
+                                &mut streaming_session,
+                                processing_for_thread.clone(),
+                                agent_cancel_for_thread.clone(),
+                            );
                         }
                         InputEvent::DictationFinalizeWindowElapsed {
                             session_id,
@@ -532,11 +482,6 @@ pub fn run() {
             commands::clear_history,
             commands::delete_history_item,
             commands::get_asr_status,
-            commands::get_sensevoice_default_dir,
-            commands::check_sensevoice_model_present,
-            commands::download_sensevoice_model,
-            commands::check_vad_model_present,
-            commands::download_vad_model,
             commands::get_zipformer_default_dir,
             commands::check_zipformer_model_present,
             commands::download_zipformer_model,
@@ -546,10 +491,7 @@ pub fn run() {
             commands::start_audio_test,
             commands::stop_audio_test,
             commands::test_llm_connection,
-            commands::get_default_scene_template,
             commands::get_default_scene_profiles,
-            commands::respond_confirmation,
-            commands::add_safety_rule,
             commands::set_indicator_window_expanded,
             commands::hide_indicator,
             commands::cancel_agent,
@@ -564,7 +506,7 @@ pub fn run() {
             commands::list_meetings,
             commands::get_meeting,
             commands::delete_meeting,
-            commands::polish_meeting,
+            commands::summarize_meeting,
         ])
         .on_window_event(|window, event| {
             if window.label() == "main" {
@@ -576,231 +518,4 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::skill_engine::{
-        advance_skill_transcript_consumed, config_skill_requires_more_input,
-        confirm_streaming_browser_open_action, plan_config_skill_update, prepare_skill_transcript,
-    };
-    use crate::state::{ConfigSkillPlan, SkillExecutionSession, SkillExecutionState,
-        VoiceCommandFeedback};
-    use crate::storage::AppConfig;
-    use crate::skills::{SkillMatch, SWITCH_POLISH_SCENE_SKILL_ID};
-    use crate::storage::PromptProfile;
-    use std::collections::HashSet;
-    use std::sync::{Arc, Mutex};
-
-    fn expect_saved_config(plan: ConfigSkillPlan) -> (AppConfig, VoiceCommandFeedback) {
-        match plan {
-            ConfigSkillPlan::Save { config, feedback } => (*config, feedback),
-            ConfigSkillPlan::Feedback(feedback) => {
-                panic!("expected saved config, got feedback: {:?}", feedback)
-            }
-        }
-    }
-
-    fn profile(id: &str, name: &str, voice_aliases: &[&str]) -> PromptProfile {
-        PromptProfile {
-            id: id.to_string(),
-            name: name.to_string(),
-            voice_aliases: voice_aliases
-                .iter()
-                .map(|alias| alias.to_string())
-                .collect(),
-            ..PromptProfile::new_default()
-        }
-    }
-
-    fn test_skill_state() -> SkillExecutionState {
-        Arc::new(Mutex::new(Some(SkillExecutionSession {
-            id: 7,
-            executed: HashSet::new(),
-            pending: HashSet::new(),
-            consumed_prefix: String::new(),
-            last_streaming_browser_open_action: None,
-        })))
-    }
-
-    #[test]
-    fn split_skill_clause_stops_at_first_separator() {
-        let input = "控制面板，打开命令提示符";
-        let (clause, consumed_end) = crate::skill_engine::split_skill_clause(input);
-
-        assert_eq!(clause, "控制面板");
-        assert_eq!(&input[consumed_end..], "打开命令提示符");
-    }
-
-    #[test]
-    fn prepare_skill_transcript_can_continue_after_unmatched_intro_clause() {
-        let state = test_skill_state();
-        let transcript = "那现在的话，我可以直接跟他说，帮我切换到中译英";
-        let (first_clause, consumed_end) = crate::skill_engine::split_skill_clause(transcript);
-
-        assert_eq!(first_clause, "那现在的话");
-
-        advance_skill_transcript_consumed(&state, 7, transcript, consumed_end);
-        let prepared =
-            prepare_skill_transcript(&state, 7, transcript).expect("expected remaining clause");
-
-        assert_eq!(prepared.0, "我可以直接跟他说，帮我切换到中译英");
-    }
-
-    #[test]
-    fn normalize_direct_windows_query_strips_open_prefix_and_page_suffix() {
-        assert_eq!(
-            crate::skill_engine::normalize_direct_windows_query("打开设置页面"),
-            "设置"
-        );
-    }
-
-    #[test]
-    fn switch_scene_matches_voice_alias() {
-        let mut config = AppConfig::default();
-        config.llm_config.profiles = vec![
-            profile("default", "默认", &[]),
-            profile("email", "邮件写作", &["邮件"]),
-        ];
-        config.llm_config.active_profile_id = "default".to_string();
-
-        let transcript = "切换到邮件";
-        let plan = plan_config_skill_update(
-            transcript,
-            &SkillMatch {
-                skill_id: SWITCH_POLISH_SCENE_SKILL_ID.to_string(),
-                keyword: "切换到".to_string(),
-                start: 0,
-                end: "切换到".len(),
-            },
-            None,
-            &config,
-        )
-        .expect("plan should succeed");
-
-        let (next_config, feedback) = expect_saved_config(plan);
-        assert_eq!(next_config.llm_config.active_profile_id, "email");
-        assert_eq!(feedback.message, "\u{5df2}\u{5207}\u{6362}\u{5230}\u{573a}\u{666f}\u{201c}\u{90ae}\u{4ef6}\u{5199}\u{4f5c}\u{201d}");
-    }
-
-    #[test]
-    fn switch_scene_falls_back_to_profile_name() {
-        let mut config = AppConfig::default();
-        config.llm_config.profiles = vec![profile("meeting", "会议纪要", &[])];
-        config.llm_config.active_profile_id = "meeting".to_string();
-
-        let plan = plan_config_skill_update(
-            "切换到会议纪要模式",
-            &SkillMatch {
-                skill_id: SWITCH_POLISH_SCENE_SKILL_ID.to_string(),
-                keyword: "切换到".to_string(),
-                start: 0,
-                end: "切换到".len(),
-            },
-            None,
-            &config,
-        )
-        .expect("plan should succeed");
-
-        match plan {
-            ConfigSkillPlan::Feedback(feedback) => {
-                assert_eq!(feedback.message, "\u{5f53}\u{524d}\u{5df2}\u{7ecf}\u{662f}\u{573a}\u{666f}\u{201c}\u{4f1a}\u{8bae}\u{7eaa}\u{8981}\u{201d}");
-            }
-            ConfigSkillPlan::Save { .. } => panic!("expected no-op feedback when already active"),
-        }
-    }
-
-    #[test]
-    fn switch_scene_reports_alias_conflicts() {
-        let mut config = AppConfig::default();
-        config.llm_config.profiles = vec![
-            profile("email", "邮件", &["客服"]),
-            profile("support", "客服回复", &["客服"]),
-        ];
-
-        let plan = plan_config_skill_update(
-            "切换到客服",
-            &SkillMatch {
-                skill_id: SWITCH_POLISH_SCENE_SKILL_ID.to_string(),
-                keyword: "切换到".to_string(),
-                start: 0,
-                end: "切换到".len(),
-            },
-            None,
-            &config,
-        )
-        .expect("plan should succeed");
-
-        match plan {
-            ConfigSkillPlan::Feedback(feedback) => {
-                assert_eq!(feedback.level, "error");
-                assert!(feedback.message.contains("匹配到多个场景"));
-            }
-            ConfigSkillPlan::Save { .. } => panic!("expected ambiguity feedback"),
-        }
-    }
-
-    #[test]
-    fn switch_scene_waits_for_scene_name_during_streaming() {
-        let skill_match = SkillMatch {
-            skill_id: SWITCH_POLISH_SCENE_SKILL_ID.to_string(),
-            keyword: "切换到".to_string(),
-            start: 0,
-            end: "切换到".len(),
-        };
-
-        assert!(config_skill_requires_more_input(
-            "切换到",
-            &skill_match,
-            None
-        ));
-        assert!(!config_skill_requires_more_input(
-            "切换到中译英",
-            &skill_match,
-            None
-        ));
-    }
-
-    #[test]
-    fn prepare_skill_transcript_removes_consumed_prefix_and_leading_punctuation() {
-        let state = test_skill_state();
-        advance_skill_transcript_consumed(&state, 7, "打开新浪", "打开新浪".len());
-
-        let prepared = prepare_skill_transcript(&state, 7, "打开新浪。打开谷歌")
-            .expect("expected remaining transcript");
-
-        assert_eq!(prepared, ("打开谷歌".to_string(), "打开新浪。".len()));
-    }
-
-    #[test]
-    fn prepare_skill_transcript_rewinds_to_common_prefix_when_asr_rewrites_text() {
-        let state = test_skill_state();
-        advance_skill_transcript_consumed(&state, 7, "打开新浪", "打开新浪".len());
-
-        let prepared =
-            prepare_skill_transcript(&state, 7, "打开新郎").expect("expected rewritten transcript");
-
-        assert_eq!(prepared, ("郎".to_string(), "打开新".len()));
-    }
-
-    #[test]
-    fn streaming_browser_open_requires_two_matching_updates() {
-        let state = test_skill_state();
-
-        assert!(!confirm_streaming_browser_open_action(
-            &state,
-            7,
-            "browser:open_target:新浪"
-        ));
-        assert!(confirm_streaming_browser_open_action(
-            &state,
-            7,
-            "browser:open_target:新浪"
-        ));
-        assert!(!confirm_streaming_browser_open_action(
-            &state,
-            7,
-            "browser:open_target:谷歌"
-        ));
-    }
 }

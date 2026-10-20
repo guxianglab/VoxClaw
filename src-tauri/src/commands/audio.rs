@@ -1,221 +1,76 @@
+use std::path::{Path, PathBuf};
+
 use tauri::{AppHandle, Manager, Runtime};
 
+use crate::asr::zipformer;
 use crate::audio;
 use crate::state::{AudioState, StorageState};
+use crate::storage::AsrProviderKind;
 
 #[tauri::command]
-pub fn get_asr_status(state: tauri::State<StorageState>) -> Result<crate::state::AsrStatus, String> {
+pub fn get_asr_status(state: tauri::State<StorageState>) -> crate::state::AsrStatus {
     let config = state.load_config();
     let configured = match config.asr.provider {
-        crate::storage::AsrProviderKind::Volcengine => {
+        AsrProviderKind::Volcengine => {
             !config.asr.volcengine.app_key.is_empty()
                 && !config.asr.volcengine.access_key.is_empty()
         }
-        crate::storage::AsrProviderKind::SenseVoiceOnnx => {
-            !config.asr.sensevoice.model_dir.is_empty()
-                && crate::asr::sensevoice::model::is_present(std::path::Path::new(
-                    &config.asr.sensevoice.model_dir,
-                ))
-        }
-        crate::storage::AsrProviderKind::ZipformerStreaming => {
-            !config.asr.zipformer.model_dir.is_empty()
-            && crate::asr::zipformer::model::is_present(std::path::Path::new(
-                &config.asr.zipformer.model_dir,
-            ))
-        }
+        AsrProviderKind::ZipformerStreaming => zipformer::model::is_present(Path::new(
+            &config.asr.zipformer.model_dir,
+        )),
     };
-    Ok(crate::state::AsrStatus { configured })
+    crate::state::AsrStatus { configured }
 }
 
-/// Default location for the bundled SenseVoice model files. Created lazily on
-/// first download.
-#[tauri::command]
-pub fn get_sensevoice_default_dir<R: Runtime>(app: AppHandle<R>) -> Result<String, String> {
-    let dir = sensevoice_default_dir(&app)?;
-    Ok(dir.display().to_string())
-}
-
-#[tauri::command]
-pub fn check_sensevoice_model_present(model_dir: String) -> bool {
-    if model_dir.is_empty() {
-        return false;
-    }
-    crate::asr::sensevoice::model::is_present(std::path::Path::new(&model_dir))
-}
-
-/// Trigger a (possibly resumable) download of the SenseVoice model into
-/// `model_dir`. Emits `asr_model_download` events with progress. Returns the
-/// final directory path so the frontend can persist it back into config.
-#[tauri::command]
-pub async fn download_sensevoice_model<R: Runtime>(
-    app: AppHandle<R>,
-    storage: tauri::State<'_, StorageState>,
-    asr: tauri::State<'_, crate::state::AsrState>,
-    model_dir: Option<String>,
-) -> Result<String, String> {
-    let target = match model_dir {
-        Some(s) if !s.is_empty() => std::path::PathBuf::from(s),
-        _ => sensevoice_default_dir(&app)?,
-    };
-
-    let proxy = storage.load_config().proxy;
-    let final_dir =
-        crate::asr::sensevoice::download::download_model(&app, target, proxy)
-            .await
-            .map_err(|e| e.to_string())?;
-
-    // Persist the path back into config and rebuild the provider.
-    let mut config = storage.load_config();
-    config.asr.sensevoice.model_dir = final_dir.display().to_string();
-    storage.save_config(&config).map_err(|e| e.to_string())?;
-
-    if matches!(
-        config.asr.provider,
-        crate::storage::AsrProviderKind::SenseVoiceOnnx
-    ) {
-        let provider = crate::asr::build_provider(&config.asr, &config.proxy)
-            .map_err(|e| e.to_string())?;
-        asr.replace(provider).map_err(|e| {
-            format!(
-                "{e}\n模型已下载并保存，但未能立即加载。请停止录音/会议后重试，或重启应用。"
-            )
-        })?;
-    }
-
-    Ok(final_dir.display().to_string())
-}
-
-fn sensevoice_default_dir<R: Runtime>(app: &AppHandle<R>) -> Result<std::path::PathBuf, String> {
+fn zipformer_default_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     let base = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("locate app_data_dir failed: {e}"))?;
-    Ok(base.join("models").join("SenseVoiceSmall-onnx"))
-}
-
-/// Check whether the Silero VAD model exists under the given SenseVoice
-/// model dir (`<model_dir>/vad/silero_vad.onnx`).
-#[tauri::command]
-pub fn check_vad_model_present(model_dir: String) -> bool {
-    if model_dir.is_empty() {
-        return false;
-    }
-    crate::asr::sensevoice::model::is_vad_present(std::path::Path::new(&model_dir))
-}
-
-/// Check whether the Zipformer streaming model exists under the given dir.
-#[tauri::command]
-pub fn check_zipformer_model_present(model_dir: String) -> bool {
-    if model_dir.is_empty() {
-        return false;
-    }
-    crate::asr::zipformer::model::is_present(std::path::Path::new(&model_dir))
-}
-
-/// Default parent directory for the Zipformer model.
-fn zipformer_default_parent_dir<R: Runtime>(app: &AppHandle<R>) -> Result<std::path::PathBuf, String> {
-    let base = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("locate app_data_dir failed: {e}"))?;
-    Ok(base.join("models"))
+    Ok(base.join("models").join(zipformer::download::ARCHIVE_DIR_NAME))
 }
 
 /// Default model directory for Zipformer (`<app_data>/models/<archive>`).
 #[tauri::command]
 pub fn get_zipformer_default_dir<R: Runtime>(app: AppHandle<R>) -> Result<String, String> {
-    let parent = zipformer_default_parent_dir(&app)?;
-    Ok(parent
-        .join(crate::asr::zipformer::download::ARCHIVE_DIR_NAME)
-        .display()
-        .to_string())
+    Ok(zipformer_default_dir(&app)?.display().to_string())
 }
 
-/// Normalize the user-provided dir to the *parent* directory that the
-/// downloader extracts into. `model_dir` may be either:
-///   - the parent dir itself (first-time custom location), or
-///   - the final model dir returned by a previous download (basename equals
-///     the archive dir name) — strip it back to its parent so we never
-///     re-download the model into a nested duplicate folder.
-fn normalize_zipformer_parent(model_dir: Option<String>) -> Option<std::path::PathBuf> {
-    match model_dir {
-        Some(d) if !d.is_empty() => {
-            let p = std::path::PathBuf::from(&d);
-            let is_target = p
-                .file_name()
-                .map(|n| n.to_string_lossy() == crate::asr::zipformer::download::ARCHIVE_DIR_NAME)
-                .unwrap_or(false);
-            if is_target {
-                p.parent().map(|parent| parent.to_path_buf()).or(Some(p))
-            } else {
-                Some(p)
-            }
-        }
-        _ => None,
-    }
+#[tauri::command]
+pub fn check_zipformer_model_present(model_dir: String) -> bool {
+    !model_dir.is_empty() && zipformer::model::is_present(Path::new(&model_dir))
 }
 
-/// Download and extract the streaming Zipformer model. Emits
-/// `asr_model_download` progress events. Returns the model directory path.
-/// If Zipformer is the active provider, rebuilds it so dictation picks up
-/// the model without a restart.
+/// Download and extract the streaming Zipformer model into the default
+/// location. Emits `asr_model_download` progress events and returns the model
+/// directory. If Zipformer is the active provider, rebuilds it so dictation
+/// picks up the model without a restart.
 #[tauri::command]
 pub async fn download_zipformer_model<R: Runtime>(
     app: AppHandle<R>,
-    model_dir: Option<String>,
     storage: tauri::State<'_, StorageState>,
     asr: tauri::State<'_, crate::state::AsrState>,
 ) -> Result<String, String> {
-    let parent = match normalize_zipformer_parent(model_dir) {
-        Some(p) => p,
-        None => zipformer_default_parent_dir(&app)?,
-    };
+    let target = zipformer_default_dir(&app)?;
+    let parent = target.parent().map(Path::to_path_buf).unwrap_or_default();
     let proxy = storage.load_config().proxy;
-    let dir = crate::asr::zipformer::download::download_zipformer_model(&app, parent, proxy)
+    let dir = zipformer::download::download_zipformer_model(&app, parent, proxy)
         .await
         .map_err(|e| e.to_string())?;
 
-    // Persist the path and rebuild the provider if Zipformer is active.
     let mut config = storage.load_config();
     config.asr.zipformer.model_dir = dir.display().to_string();
     storage.save_config(&config).map_err(|e| e.to_string())?;
 
-    if matches!(
-        config.asr.provider,
-        crate::storage::AsrProviderKind::ZipformerStreaming
-    ) {
+    if config.asr.provider == AsrProviderKind::ZipformerStreaming {
         let provider = crate::asr::build_provider(&config.asr, &config.proxy)
             .map_err(|e| e.to_string())?;
         asr.replace(provider).map_err(|e| {
-            format!(
-                "{e}\n模型已下载并保存，但未能立即加载。请停止录音/会议后重试，或重启应用。"
-            )
+            format!("{e}
+模型已下载并保存，但未能立即加载。请停止录音/会议后重试，或重启应用。")
         })?;
     }
 
-    Ok(dir.display().to_string())
-}
-
-/// Download the Silero VAD model into `<model_dir>/vad/`. Emits
-/// `asr_model_download` progress events (reuses the SenseVoice download UI).
-/// Returns the `vad/` directory path.
-#[tauri::command]
-pub async fn download_vad_model<R: Runtime>(
-    app: AppHandle<R>,
-    model_dir: String,
-    storage: tauri::State<'_, StorageState>,
-) -> Result<String, String> {
-    if model_dir.is_empty() {
-        return Err("model_dir is empty".into());
-    }
-    let proxy = storage.load_config().proxy;
-    let dir = crate::asr::sensevoice::download::download_vad_model(
-        &app,
-        std::path::PathBuf::from(&model_dir),
-        proxy,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
     Ok(dir.display().to_string())
 }
 

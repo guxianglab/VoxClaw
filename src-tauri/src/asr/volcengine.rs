@@ -1,9 +1,4 @@
-//! Volcengine bigmodel SAUC streaming ASR provider.
-//!
-//! This file is a near-verbatim move of the original `src/asr.rs` (cloud
-//! WebSocket implementation), adapted to the [`super::AsrProvider`] trait.
-//! Behavioural changes vs. the original are intentionally minimal: only the
-//! public surface (struct names, constructor, `finish_and_wait`) was reshaped.
+//! Volcengine bigmodel SAUC streaming ASR provider (cloud WebSocket).
 
 use anyhow::{anyhow, Result};
 use base64::Engine;
@@ -12,13 +7,11 @@ use flate2::Compression;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use std::io::Write;
-use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
-use tokio_socks::tcp::{Socks4Stream, Socks5Stream};
 use tokio_tungstenite::client_async_tls_with_config;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::HeaderValue;
@@ -26,7 +19,7 @@ use tokio_tungstenite::tungstenite::{self, Message};
 
 use crate::storage::{OnlineAsrConfig, ProxyConfig};
 
-use super::{AsrCapabilities, AsrProvider, AsrSession, AsrStreamParams, TranscriptSegment};
+use super::{AsrProvider, AsrSession, AsrStreamParams};
 
 const ASYNC_URL: &str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async";
 const ASR_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -47,15 +40,6 @@ impl VolcengineProvider {
 impl AsrProvider for VolcengineProvider {
     fn name(&self) -> &'static str {
         "volcengine"
-    }
-
-    fn capabilities(&self) -> AsrCapabilities {
-        AsrCapabilities {
-            streaming: true,
-            offline: false,
-            languages: vec!["zh-CN".to_string()],
-            supports_diarization: false,
-        }
     }
 
     fn start_streaming(&self, params: AsrStreamParams) -> Result<Box<dyn AsrSession>> {
@@ -79,12 +63,8 @@ impl AsrProvider for VolcengineProvider {
             }
         });
 
-        let segments_shared = Arc::new(Mutex::new(Vec::<TranscriptSegment>::new()));
-        let segments_for_session = segments_shared.clone();
-
         // Main streaming thread: owns its own current-thread Tokio runtime.
         let handle = thread::spawn(move || {
-            let segments_for_task = segments_shared.clone();
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -233,25 +213,6 @@ impl AsrProvider for VolcengineProvider {
                                                     latest_text = text.to_string();
                                                     if msg_type == 0b1001 {
                                                         final_text = latest_text.clone();
-                                                        // Capture utterances on final result
-                                                        if let Some(uts) = result.get("utterances").and_then(|u| u.as_array()) {
-                                                            let mut segs = Vec::new();
-                                                            for (idx, u) in uts.iter().enumerate() {
-                                                                let utt_text = u.get("text").and_then(|t| t.as_str()).unwrap_or("");
-                                                                let start_ms = u.get("start_time").and_then(|t| t.as_u64()).unwrap_or(0);
-                                                                let end_ms = u.get("end_time").and_then(|t| t.as_u64()).unwrap_or(start_ms);
-                                                                let speaker = None; // TODO: real diarization when a model is available
-                                                                segs.push(TranscriptSegment {
-                                                                    start_ms,
-                                                                    end_ms,
-                                                                    speaker,
-                                                                    text: utt_text.to_string(),
-                                                                });
-                                                            }
-                                                            if let Ok(mut guard) = segments_for_task.lock() {
-                                                                *guard = segs;
-                                                            }
-                                                        }
                                                     }
                                                     on_update(latest_text.clone());
                                                 }
@@ -318,7 +279,6 @@ impl AsrProvider for VolcengineProvider {
         Ok(Box::new(VolcengineSession {
             handle: Some(handle),
             tx: Some(tx),
-            segments: segments_for_session,
         }))
     }
 }
@@ -326,7 +286,6 @@ impl AsrProvider for VolcengineProvider {
 pub struct VolcengineSession {
     handle: Option<JoinHandle<Result<String>>>,
     tx: Option<mpsc::Sender<Vec<f32>>>,
-    segments: Arc<Mutex<Vec<TranscriptSegment>>>,
 }
 
 impl AsrSession for VolcengineSession {
@@ -340,10 +299,6 @@ impl AsrSession for VolcengineSession {
             },
             None => Err(anyhow!("Session already finished")),
         }
-    }
-
-    fn take_segments(&self) -> Vec<TranscriptSegment> {
-        self.segments.lock().map(|g| g.clone()).unwrap_or_default()
     }
 }
 
@@ -380,14 +335,13 @@ async fn connect_stream(url: &str, proxy: &ProxyConfig) -> Result<BoxedStream> {
     }
 
     let proxy_url = reqwest::Url::parse(proxy.url.trim())?;
-    match proxy_url.scheme() {
-        "http" => connect_http_proxy(&proxy_url, &host, port).await,
-        "socks5" | "socks5h" => connect_socks5_proxy(&proxy_url, &host, port).await,
-        "socks4" | "socks4a" => connect_socks4_proxy(&proxy_url, &host, port).await,
-        scheme => Err(anyhow!(
-            "Unsupported proxy scheme for ASR websocket: {scheme}"
-        )),
+    if proxy_url.scheme() != "http" {
+        return Err(anyhow!(
+            "Unsupported proxy scheme: {} (only http:// is supported)",
+            proxy_url.scheme()
+        ));
     }
+    connect_http_proxy(&proxy_url, &host, port).await
 }
 
 async fn connect_http_proxy(
@@ -445,73 +399,6 @@ async fn connect_http_proxy(
     if !status_line.contains(" 200 ") {
         return Err(anyhow!("HTTP proxy CONNECT failed: {status_line}"));
     }
-
-    Ok(Box::new(stream))
-}
-
-async fn connect_socks5_proxy(
-    proxy_url: &reqwest::Url,
-    host: &str,
-    port: u16,
-) -> Result<BoxedStream> {
-    let proxy_addr = format!(
-        "{}:{}",
-        proxy_url
-            .host_str()
-            .ok_or_else(|| anyhow!("Proxy URL missing host"))?,
-        proxy_url
-            .port_or_known_default()
-            .ok_or_else(|| anyhow!("Proxy URL missing port"))?
-    );
-    let target_addr = format!("{host}:{port}");
-
-    let stream = if !proxy_url.username().is_empty() || proxy_url.password().is_some() {
-        Socks5Stream::connect_with_password(
-            proxy_addr.as_str(),
-            target_addr.as_str(),
-            proxy_url.username(),
-            proxy_url.password().unwrap_or(""),
-        )
-        .await?
-        .into_inner()
-    } else {
-        Socks5Stream::connect(proxy_addr.as_str(), target_addr.as_str())
-            .await?
-            .into_inner()
-    };
-
-    Ok(Box::new(stream))
-}
-
-async fn connect_socks4_proxy(
-    proxy_url: &reqwest::Url,
-    host: &str,
-    port: u16,
-) -> Result<BoxedStream> {
-    let proxy_addr = format!(
-        "{}:{}",
-        proxy_url
-            .host_str()
-            .ok_or_else(|| anyhow!("Proxy URL missing host"))?,
-        proxy_url
-            .port_or_known_default()
-            .ok_or_else(|| anyhow!("Proxy URL missing port"))?
-    );
-    let target_addr = format!("{host}:{port}");
-
-    let stream = if !proxy_url.username().is_empty() {
-        Socks4Stream::connect_with_userid(
-            proxy_addr.as_str(),
-            target_addr.as_str(),
-            proxy_url.username(),
-        )
-        .await?
-        .into_inner()
-    } else {
-        Socks4Stream::connect(proxy_addr.as_str(), target_addr.as_str())
-            .await?
-            .into_inner()
-    };
 
     Ok(Box::new(stream))
 }

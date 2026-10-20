@@ -2,8 +2,7 @@
 //!
 //! Downloads the bilingual zh-en streaming Zipformer model as a `.tar.bz2`
 //! from the sherpa-onnx GitHub release and extracts it into the model
-//! directory. Emits `asr_model_download` progress events (same UI as
-//! SenseVoice/VAD downloads).
+//! directory. Emits `asr_model_download` progress events.
 
 use std::fs;
 use std::io::Write;
@@ -12,12 +11,31 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Result};
 use bzip2::read::BzDecoder;
 use futures_util::StreamExt;
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, Runtime};
 use tar::Archive;
 
-use crate::asr::sensevoice::download::{DownloadEvent, emit};
 use crate::http_client;
 use crate::storage::ProxyConfig;
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+enum DownloadEvent {
+    Started { total_files: usize },
+    File {
+        name: String,
+        index: usize,
+        total: usize,
+        downloaded: u64,
+        size: Option<u64>,
+    },
+    Finished { dir: String },
+    Failed { message: String },
+}
+
+fn emit<R: Runtime>(app: &AppHandle<R>, event: DownloadEvent) {
+    let _ = app.emit("asr_model_download", &event);
+}
 
 /// The model archive URL (bilingual zh-en streaming Zipformer, ~300 MB).
 const MODEL_URL: &str =

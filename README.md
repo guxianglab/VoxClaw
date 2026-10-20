@@ -21,19 +21,15 @@
 
 Traditional dictation tools simply transcribe words. **VoxClaw** is built differently. It combines blazing-fast online streaming ASR with intelligent LLM post-correction to ensure what you speak isn't just transcribed, but perfectly formatted for the context. 
 
-Whether you are writing code, sending emails, or triggering system skills, VoxClaw is your invisible, always-ready co-pilot.
+Whether you are writing code, sending emails, or giving voice commands, VoxClaw is your invisible, always-ready co-pilot.
 
 
 ## ✨ Features
 
-- 🎙️ **Dual-Engine Recognition:** Real-time online ASR with live partial transcript previews, plus a brand new **Offline Mode** powered by local SenseVoice models for 100% privacy and offline usage.
-- ⌨️ **Global Input:** Write directly into any native application, chat, browser, IDE, or system dialog using intelligent clipboard injection (`Ctrl+V`) and a low-latency Windows API raw input listener.
-- 🤖 **Autonomous AI Agent:** A powerful ReAct agent that can browse the web, edit files, run commands, and control your system through voice.
-- 📅 **Meeting Management:** Advanced meeting management features with session handling to streamline your daily workflows.
-- 🎯 **Triple Modes:**
-  - **Dictation Mode:** Transcribe and type text seamlessly with optional LLM polishing.
-  - **Agent Mode:** Invoke an autonomous agent to perform complex multi-step tasks (e.g., "Find the latest news about Rust and summarize it in a new file").
-  - **Skills Mode:** Quick voice commands for specific system actions.
+- 🎙️ **Cloud or Local Recognition:** Volcengine (Doubao) cloud streaming ASR with live previews, or a local streaming Zipformer model that runs fully offline (runtime bundled; download the model from Settings in one click).
+- ⌨️ **Global Input:** Write directly into any native application, chat, browser, IDE, or system dialog using clipboard injection (`Ctrl+V`) and a low-latency Windows raw input listener.
+- 🤖 **AI Assistant:** Hold the trigger and speak a command — the assistant can open websites and apps, take screenshots, read/write the clipboard and draft emails.
+- 📅 **Meeting Mode:** Records microphone + system audio, transcribes live, and generates a title, key points, decisions and to-dos when the meeting ends.
 - 🎧 **Audio Robustness:** Advanced audio processing module with auto-recovery for audio devices on disconnect or sleep mode via device watcher.
 - 🎨 **Tasteful UI:** A gorgeous, unobtrusive glassmorphism indicator that floats intelligently on your screen.
 
@@ -53,63 +49,8 @@ We highly recommend starting with the **Mouse Middle Button**:
 
 | Mode | Trigger | Action |
 | --- | --- | --- |
-| 📝 **Dictation** | `Middle Mouse Button` (Hold) | Hold to speak, release to type exactly where your cursor is. |
-| 📝 **Dictation** | `Right Alt` (Toggle) | Press once to start, press again to complete. |
-| ⚡ **Skills** | `Ctrl + Win` (Hold) | Speak a command (e.g., "Open Calculator") and release. |
-
----
-
-## 📦 Offline Mode (SenseVoice) — Runtime DLL Setup
-
-The Offline Mode powered by the local SenseVoice model requires **Microsoft's ONNX Runtime** to run inference. VoxClaw does **not** bundle this DLL (to avoid antivirus false positives and to keep the installer small), so on first use you must download and place `onnxruntime.dll` yourself.
-
-> ℹ️ If you skip this step, VoxClaw will fall back to whatever `onnxruntime.dll` it finds on your machine (typically from a Python install) — which is very often an **incompatible version**, causing the error `ort ... is not compatible with the ONNX Runtime binary`.
-
-### Step 1 — Download the correct DLL
-
-Grab the official **onnxruntime-win-x64-1.23.0** package from Microsoft (CPU build):
-
-```
-https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-win-x64-1.23.0.zip
-```
-
-> ⚠️ **Version requirement:** the bundled `ort` crate (v2.0.0-rc.11) requires ONNX Runtime **`>= 1.23.x`**. Do **not** use 1.20.x — it is the version most users hit the incompatibility error with.
-
-Unzip and locate `lib\onnxruntime.dll` — that single file is all you need.
-
-### Step 2 — Place the DLL (pick one)
-
-VoxClaw searches these locations in order; use whichever fits your setup:
-
-| Priority | Location | Notes |
-| --- | --- | --- |
-| 1 | Next to `voxclaw.exe` | **Recommended.** Right-click the desktop shortcut → "Open file location", drop the DLL there. Fully isolates from Python. |
-| 2 | Env var `SONICCLAW_ONNXRUNTIME_DLL` | Set to the full path of the DLL. Requires app restart. |
-| 3 | Python site-packages | **Not recommended.** May be overwritten by `pip`; version can drift. Last-resort fallback only. |
-
-### Step 3 — Restart VoxClaw
-
-The ONNX Runtime is loaded **once per process** and frozen for the lifetime of the process. You **must fully quit and reopen VoxClaw** for the new DLL to take effect — re-clicking "Switch Model" inside a running process will keep using the old one.
-
-### Verifying it works
-
-Open **Settings → switch to SenseVoice → Switch Model**. You should no longer see the `is not compatible` error. If you still do, double-check the DLL is in one of the locations above and that the app was restarted.
-
-### One-line PowerShell fix
-
-For a default install location, save as `fix-ort.ps1` and run:
-
-```powershell
-$ErrorActionPreference = "Stop"
-Invoke-WebRequest -Uri "https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-win-x64-1.23.0.zip" -OutFile "$env:TEMP\ort.zip"
-Expand-Archive -Path "$env:TEMP\ort.zip" -DestinationPath "$env:TEMP\ort" -Force
-Copy-Item "$env:TEMP\ort\onnxruntime-win-x64-1.23.0\lib\onnxruntime.dll" -Destination "$env:LOCALAPPDATA\voxclaw\onnxruntime.dll" -Force
-Write-Host "Done. Restart VoxClaw now."
-```
-
-> 💡 Replace `$env:LOCALAPPDATA\voxclaw` with your actual install path if different.
-
-> ⚠️ **About GPU:** this CPU-only DLL does **not** include the DirectML provider. If `use_gpu` is enabled in Settings, DirectML initialization will fail and silently fall back to CPU — dictation still works, just without GPU acceleration.
+| 📝 **Dictation** | `Middle Mouse Button` / `Right Alt` (Click) | Click to start, click again to type where your cursor is. Double-click for AI polish. |
+| 🤖 **AI Assistant** | `Middle Mouse Button` / `Right Alt` (Hold) | Speak a command (e.g., "Open GitHub", "Take a screenshot") and release. |
 
 ---
 

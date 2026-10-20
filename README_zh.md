@@ -25,14 +25,10 @@
 
 ## ✨ 核心特性
 
-- 🎙️ **在线/离线双引擎识别:** 既支持基于顶级在线 ASR 的实时流式识别（边说边看预览），又全新加入了 **SenseVoice 离线本地模型** 支持，无需联网即可使用，100% 保障您的数据隐私。
-- ⌨️ **全局沉浸输入:** 通过底层的剪贴板注入 (`Ctrl+V`) 和低延迟的原生鼠标与键盘事件监听，完美适配微信、浏览器、IDE、甚至是系统的任何输入框。
-- 🤖 **自主 AI 智能体:** 强大的 ReAct 架构智能体，能够理解复杂意图，自动刷网页、改代码、运行指令甚至截屏。
-- 📅 **会议管理:** 新增会议管理功能与会话处理，助力高效记录与总结。
-- 🎯 **三位一体模式:**
-  - **听写模式 (Dictation):** 高效记录，支持大模型自动润色。
-  - **智能体模式 (Agent):** 开启自主行动能力，处理多步骤复杂任务（如：“整理今天的股市新闻并存到桌面”）。
-  - **指令模式 (Skills):** 语音成为系统捷径（例如：说“打开计算器”、“截个图”并瞬间响应）。
+- 🎙️ **云端/本地双引擎识别:** 豆包云端流式识别（边说边看预览），或 Zipformer 本地流式模型（无需联网，安装包自带运行时，首次使用在设置中一键下载模型）。
+- ⌨️ **全局沉浸输入:** 通过剪贴板注入 (`Ctrl+V`) 和低延迟的原生鼠标与键盘事件监听，适配微信、浏览器、IDE 等任意输入框。
+- 🤖 **AI 助手:** 长按触发键说出指令，助手可以打开网页和应用、截图、读写剪贴板、起草邮件。
+- 📅 **会议模式:** 同时录制麦克风和系统声音，实时转写，结束后自动生成标题、要点、决议和待办。
 - 🎧 **极强音频鲁棒性:** 内置高级音频处理模块，支持设备断开、睡眠唤醒后的自动恢复与热插拔监测。
 - 🎨 **极致优雅的 UI:** 为桌面美学打造的悬浮毛玻璃胶囊，极简、克制且充满交互细节。
 
@@ -52,69 +48,14 @@
 
 | 模式 | 触发键位 | 交互逻辑 |
 | --- | --- | --- |
-| 📝 **听写功能** | `鼠标中键` (长按) | 长按开始说话，松手即刻上屏到光标处。 |
-| 📝 **听写功能** | `右侧 Alt` (单点) | 点击一次开始，再点击一次结束并上屏。 |
-| ⚡ **语音指令** | `Ctrl + Win` (长按) | 说出指令（如”截个图”），松开立即执行。 |
-
----
-
-## 📦 离线模式（SenseVoice）运行时 DLL 安装说明
-
-基于本地 SenseVoice 模型的离线模式需要依赖**微软的 ONNX Runtime** 才能进行推理。出于规避杀软误报以及缩小安装包体积的考虑，VoxClaw **未内置** 该 DLL，首次使用时需要你手动下载并放置 `onnxruntime.dll`。
-
-> ℹ️ 若跳过此步骤，VoxClaw 会回退到机器上**已有的** `onnxruntime.dll`（通常来自 Python 安装环境），而这些版本**几乎都是不兼容的旧版**，从而触发 `ort ... is not compatible with the ONNX Runtime binary` 报错。
-
-### 第一步 —— 下载正确的 DLL
-
-从微软官方仓库下载 **onnxruntime-win-x64-1.23.0**（CPU 标准版）：
-
-```
-https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-win-x64-1.23.0.zip
-```
-
-> ⚠️ **版本要求：** 项目内置的 `ort` 库（v2.0.0-rc.11）要求 ONNX Runtime **`>= 1.23.x`**。**不要**使用 1.20.x —— 这是绝大多数用户中招报错的版本。
-
-解压后取 `lib\onnxruntime.dll` 这**一个文件**即可。
-
-### 第二步 —— 放置 DLL（三选一）
-
-VoxClaw 会按以下顺序查找 DLL，任选其一即可：
-
-| 优先级 | 位置 | 说明 |
-| --- | --- | --- |
-| 1 | `voxclaw.exe` 同级目录 | **推荐。** 右键桌面快捷方式 → “打开文件所在的位置”，把 DLL 丢进去。完全脱离 Python 环境。 |
-| 2 | 环境变量 `SONICCLAW_ONNXRUNTIME_DLL` | 值设为 DLL 的完整路径。需要重启应用生效。 |
-| 3 | Python site-packages 目录 | **不推荐。** 可能被 `pip` 覆盖，版本会漂移。仅作最后兜底。 |
-
-### 第三步 —— 重启 VoxClaw
-
-ONNX Runtime 在一个进程内**只加载一次**并被冻结至进程结束。你**必须完全退出并重新打开 VoxClaw**，新 DLL 才会生效 —— 仅在运行中的进程里重新点击”切换模型”不会换 DLL。
-
-### 验证是否成功
-
-打开 **设置 → 切换到 SenseVoice → 切换模型**，应当**不再**出现 `is not compatible` 报错。若仍报错，请检查 DLL 是否在上述任一位置、以及应用是否真的重启过。
-
-### 一行 PowerShell 自动修复（默认安装路径）
-
-保存为 `fix-ort.ps1` 以管理员身份运行：
-
-```powershell
-$ErrorActionPreference = “Stop”
-Invoke-WebRequest -Uri “https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-win-x64-1.23.0.zip” -OutFile “$env:TEMP\ort.zip”
-Expand-Archive -Path “$env:TEMP\ort.zip” -DestinationPath “$env:TEMP\ort” -Force
-Copy-Item “$env:TEMP\ort\onnxruntime-win-x64-1.23.0\lib\onnxruntime.dll” -Destination “$env:LOCALAPPDATA\voxclaw\onnxruntime.dll” -Force
-Write-Host “完成。请重启 VoxClaw。”
-```
-
-> 💡 若 VoxClaw 不在默认路径，请将 `$env:LOCALAPPDATA\voxclaw` 替换为实际安装路径。
-
-> ⚠️ **关于 GPU：** 该 CPU 标准版 DLL **不含** DirectML 执行提供程序。若设置中开启了 `use_gpu`，DirectML 初始化会失败并静默回退到 CPU —— 听写功能照常可用，只是没有 GPU 加速。
+| 📝 **听写** | `鼠标中键` / `右侧 Alt` (单击) | 单击开始，再单击结束并上屏；双击触发 AI 润色。 |
+| 🤖 **AI 助手** | `鼠标中键` / `右侧 Alt` (长按) | 说出指令（如“打开 GitHub”“截个图”），松开执行。 |
 
 ---
 
 ## 🧠 智能体场景 (LLM Profiles)
 
-接入任何兼容 OpenAI 格式的 API，将听写拉升至“智能体”层级。
+接入任何 OpenAI 兼容或 Anthropic 格式的 API，润色、AI 助手和会议总结共用同一份配置。
 你不再受限于一套生硬的提示词，而是能为不同场景自由建立 Profile：
 - **会议纪要**：提取核心要点，条理清晰。
 - **商务沟通**：转换你的口语为极其专业的邮件措辞。

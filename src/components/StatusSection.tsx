@@ -8,7 +8,7 @@ interface StatusSectionProps {
 export function StatusSection({ asrConfigured, onSettingsClick }: StatusSectionProps) {
   const statusText = asrConfigured ? "待机中" : "需要完成设置";
   const helperText = asrConfigured
-    ? "单击开始，双击触发润色，长按执行技能"
+    ? "单击开始，双击触发润色，长按唤起 AI 助手"
     : "先配置麦克风和识别服务";
 
   return (

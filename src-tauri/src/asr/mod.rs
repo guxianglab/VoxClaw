@@ -2,47 +2,19 @@
 //!
 //! `AsrProvider` is the per-implementation trait. `AsrService` is the
 //! Tauri-managed façade that holds the currently active provider and exposes
-//! a stable streaming entry point used by `dictation` (and later `meeting`).
-//!
-//! The original Volcengine bigmodel implementation lives in
-//! `volcengine.rs`. New providers (e.g. SenseVoice ONNX) should add a sibling
-//! module and be wired into [`build_provider`].
+//! a stable streaming entry point used by dictation and meeting mode.
 
 use anyhow::{anyhow, Result};
 use std::error::Error;
 use std::fmt;
 use std::path::Path;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 
-use crate::storage::{
-    AsrConfig, AsrProviderKind, ProxyConfig, SenseVoiceOnnxConfig, ZipformerStreamingConfig,
-};
+use crate::storage::{AsrConfig, AsrProviderKind, ProxyConfig, ZipformerStreamingConfig};
 
 pub mod volcengine;
-pub mod sensevoice;
 pub mod zipformer;
 pub mod resampler;
-
-// ---------------------------------------------------------------------------
-// Trait surface
-// ---------------------------------------------------------------------------
-
-#[derive(Clone, Debug, Default)]
-pub struct AsrCapabilities {
-    pub streaming: bool,
-    pub offline: bool,
-    pub languages: Vec<String>,
-    pub supports_diarization: bool,
-}
-
-#[derive(Clone, Debug)]
-#[allow(dead_code)] // populated by future SenseVoice / meeting-mode paths
-pub struct TranscriptSegment {
-    pub start_ms: u64,
-    pub end_ms: u64,
-    pub speaker: Option<String>,
-    pub text: String,
-}
 
 pub struct AsrStreamParams {
     pub audio_rx: std::sync::mpsc::Receiver<Vec<f32>>,
@@ -52,29 +24,12 @@ pub struct AsrStreamParams {
 
 pub trait AsrProvider: Send + Sync {
     fn name(&self) -> &'static str;
-    fn capabilities(&self) -> AsrCapabilities;
     fn start_streaming(&self, params: AsrStreamParams) -> Result<Box<dyn AsrSession>>;
-
-    /// Downcast hook for meeting mode, which needs the concrete SenseVoice
-    /// provider's per-segment inference. Default returns `None`; SenseVoice
-    /// overrides to return `Some(self)`.
-    fn as_sensevoice(&self) -> Option<&crate::asr::sensevoice::SenseVoiceProvider> {
-        None
-    }
 }
 
 pub trait AsrSession: Send {
     /// Drain any pending audio and return the final transcript text.
-    /// Implementations may also expose richer segment data via
-    /// [`AsrSession::take_segments`].
     fn finish_and_wait(self: Box<Self>) -> Result<String>;
-
-    /// Return segment-level transcript data (utterances with timestamps).
-    /// Default returns empty — providers that support utterance segmentation
-    /// should override.
-    fn take_segments(&self) -> Vec<TranscriptSegment> {
-        Vec::new()
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -90,7 +45,7 @@ pub trait AsrSession: Send {
 pub enum ProviderBuildError {
     /// A local engine was selected but its model is not downloaded yet.
     ModelMissing(String),
-    /// Any other failure (ONNX Runtime, corrupted files, etc.).
+    /// Any other failure (corrupted model files, etc.).
     Other(String),
 }
 
@@ -105,12 +60,6 @@ impl fmt::Display for ProviderBuildError {
 }
 
 impl Error for ProviderBuildError {}
-
-/// True when the SenseVoice model dir is configured and complete.
-fn sensevoice_model_ready(config: &SenseVoiceOnnxConfig) -> bool {
-    !config.model_dir.is_empty()
-        && sensevoice::model::is_present(Path::new(&config.model_dir))
-}
 
 /// True when the Zipformer model dir is configured and complete.
 fn zipformer_model_ready(config: &ZipformerStreamingConfig) -> bool {
@@ -131,22 +80,6 @@ pub fn build_provider(
             config.volcengine.clone(),
             proxy.clone(),
         ))),
-        AsrProviderKind::SenseVoiceOnnx => {
-            if !sensevoice_model_ready(&config.sensevoice) {
-                return Err(ProviderBuildError::ModelMissing(model_missing_notice(
-                    "SenseVoice",
-                )));
-            }
-            let provider = sensevoice::SenseVoiceProvider::try_new(&config.sensevoice).map_err(
-                |err| {
-                    ProviderBuildError::Other(anyhow!(
-                        "SenseVoice 离线引擎加载失败: {err}。请检查模型文件是否存在，以及 onnxruntime.dll 是否可用。"
-                    )
-                    .to_string())
-                },
-            )?;
-            Ok(Arc::new(provider))
-        }
         AsrProviderKind::ZipformerStreaming => {
             if !zipformer_model_ready(&config.zipformer) {
                 return Err(ProviderBuildError::ModelMissing(model_missing_notice(
@@ -222,8 +155,6 @@ impl AsrService {
             .expect("AsrService inner lock poisoned")
     }
 
-    /// Convenience entry-point that mirrors the previous `start_streaming_session`
-    /// signature so existing call sites only need a small touch-up.
     pub fn start_streaming_session<F>(
         &self,
         audio_rx: std::sync::mpsc::Receiver<Vec<f32>>,
@@ -233,41 +164,21 @@ impl AsrService {
     where
         F: Fn(String) + Send + Sync + 'static,
     {
-        let provider = self.current();
-        let session = provider.start_streaming(AsrStreamParams {
+        let session = self.current().start_streaming(AsrStreamParams {
             audio_rx,
             sample_rate,
             on_update: Box::new(on_update),
         })?;
-        Ok(StreamingSession {
-            inner: Some(session),
-            segments: Arc::new(Mutex::new(Vec::new())),
-        })
+        Ok(StreamingSession(session))
     }
 }
 
 /// Public handle returned to callers. Wraps the provider-specific session so
 /// downstream code never depends on a concrete type.
-pub struct StreamingSession {
-    inner: Option<Box<dyn AsrSession>>,
-    segments: Arc<Mutex<Vec<TranscriptSegment>>>,
-}
+pub struct StreamingSession(Box<dyn AsrSession>);
 
 impl StreamingSession {
-    pub fn finish_and_wait(mut self) -> Result<String> {
-        // Grab segments before consuming the session.
-        if let Some(session) = self.inner.as_ref() {
-            if let Ok(mut guard) = self.segments.lock() {
-                *guard = session.take_segments();
-            }
-        }
-        match self.inner.take() {
-            Some(session) => session.finish_and_wait(),
-            None => Err(anyhow!("Session already finished")),
-        }
-    }
-
-    pub fn take_segments(&self) -> Vec<TranscriptSegment> {
-        self.segments.lock().map(|g| g.clone()).unwrap_or_default()
+    pub fn finish_and_wait(self) -> Result<String> {
+        self.0.finish_and_wait()
     }
 }

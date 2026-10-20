@@ -13,9 +13,7 @@ use std::thread;
 use anyhow::{anyhow, Result};
 use sherpa_onnx::{OnlineRecognizer, OnlineRecognizerConfig};
 
-use crate::asr::{
-    AsrCapabilities, AsrProvider, AsrSession, AsrStreamParams, TranscriptSegment,
-};
+use crate::asr::{AsrProvider, AsrSession, AsrStreamParams};
 use crate::asr::resampler::StreamingResampler16k;
 use crate::asr::zipformer::model;
 use crate::storage::ZipformerStreamingConfig;
@@ -58,7 +56,7 @@ impl ZipformerProvider {
         cfg.model_config.transducer.decoder = Some(decoder.to_string_lossy().to_string());
         cfg.model_config.transducer.joiner = Some(joiner.to_string_lossy().to_string());
         cfg.model_config.tokens = Some(tokens.to_string_lossy().to_string());
-        cfg.enable_endpoint = config.enable_endpoint;
+        cfg.enable_endpoint = true;
         cfg.decoding_method = Some("greedy_search".to_string());
         // Endpoint defaults tuned for continuous speech (meetings):
         //   rule1: 2.4s trailing silence → end utterance (paragraph break).
@@ -84,15 +82,6 @@ impl AsrProvider for ZipformerProvider {
         "zipformer_streaming"
     }
 
-    fn capabilities(&self) -> AsrCapabilities {
-        AsrCapabilities {
-            streaming: true,
-            offline: true,
-            languages: vec!["zh".into(), "en".into()],
-            supports_diarization: false,
-        }
-    }
-
     fn start_streaming(&self, params: AsrStreamParams) -> Result<Box<dyn AsrSession>> {
         let AsrStreamParams {
             audio_rx,
@@ -101,10 +90,9 @@ impl AsrProvider for ZipformerProvider {
         } = params;
 
         let recognizer = self.recognizer.clone();
-        let (handle, collected) = ZipformerSession::spawn(recognizer, audio_rx, sample_rate, on_update)?;
+        let handle = ZipformerSession::spawn(recognizer, audio_rx, sample_rate, on_update)?;
         Ok(Box::new(ZipformerSession {
             handle: Some(handle),
-            collected,
         }))
     }
 }
@@ -112,14 +100,15 @@ impl AsrProvider for ZipformerProvider {
 /// A streaming session: a feeder thread pumps audio, accumulates final text,
 /// and emits partials. `stop()` joins the thread and returns the full text.
 pub struct ZipformerSession {
-    handle: Option<thread::JoinHandle<(String, Vec<TranscriptSegment>)>>,
-    /// Shared accumulator, readable before the thread joins (for live partials).
-    collected: Arc<std::sync::Mutex<Collected>>,
+    handle: Option<thread::JoinHandle<String>>,
 }
 
-struct Collected {
-    full_text: String,
-    segments: Vec<TranscriptSegment>,
+/// Append a finalized utterance to the running transcript.
+fn push_utterance(full_text: &mut String, text: &str) {
+    if !full_text.is_empty() {
+        full_text.push(' ');
+    }
+    full_text.push_str(text);
 }
 
 impl ZipformerSession {
@@ -128,12 +117,7 @@ impl ZipformerSession {
         audio_rx: std::sync::mpsc::Receiver<Vec<f32>>,
         sample_rate: u32,
         on_update: Box<dyn Fn(String) + Send + Sync + 'static>,
-    ) -> Result<(thread::JoinHandle<(String, Vec<TranscriptSegment>)>, Arc<std::sync::Mutex<Collected>>)> {
-        let collected = Arc::new(std::sync::Mutex::new(Collected {
-            full_text: String::new(),
-            segments: Vec::new(),
-        }));
-
+    ) -> Result<thread::JoinHandle<String>> {
         let needs_resample = (sample_rate as i32 - TARGET_SR).abs() >= 1;
         let mut resampler = if needs_resample {
             Some(StreamingResampler16k::new(sample_rate)?)
@@ -141,15 +125,12 @@ impl ZipformerSession {
             None
         };
 
-        let collected_for_thread = collected.clone();
         let handle = thread::Builder::new()
             .name("zipformer-stream".into())
             .spawn(move || {
                 let stream = recognizer.create_stream();
-                let mut utterance_text = String::new(); // text since last endpoint reset
-                let mut utterance_start_ms: u64 = 0;
-                let mut total_ms: u64 = 0;
                 let mut last_partial = String::new();
+                let mut full_text = String::new();
 
                 while let Ok(chunk) = audio_rx.recv() {
                     // Resample to 16k if needed.
@@ -174,11 +155,8 @@ impl ZipformerSession {
                         if partial != last_partial && !partial.is_empty() {
                             last_partial = partial.clone();
                             // Full text so far = finalized utterances + current partial.
-                            let snapshot = if let Ok(c) = collected_for_thread.lock() {
-                                format!("{}{}", c.full_text, partial)
-                            } else {
-                                partial.clone()
-                            };
+                            let mut snapshot = full_text.clone();
+                            push_utterance(&mut snapshot, &partial);
                             on_update(snapshot);
                         }
                     }
@@ -188,29 +166,12 @@ impl ZipformerSession {
                         if let Some(result) = recognizer.get_result(&stream) {
                             let text = result.text.trim().to_string();
                             if !text.is_empty() {
-                                let end_ms = total_ms;
-                                if let Ok(mut c) = collected_for_thread.lock() {
-                                    if !c.full_text.is_empty() {
-                                        c.full_text.push(' ');
-                                    }
-                                    c.full_text.push_str(&text);
-                                    c.segments.push(TranscriptSegment {
-                                        start_ms: utterance_start_ms,
-                                        end_ms,
-                                        speaker: None,
-                                        text: text.clone(),
-                                    });
-                                }
-                                utterance_text.clear();
+                                push_utterance(&mut full_text, &text);
                             }
                         }
                         last_partial.clear();
                         recognizer.reset(&stream);
-                        utterance_start_ms = total_ms;
                     }
-
-                    // Advance the clock by the chunk duration (16k domain).
-                    total_ms += (mono_16k.len() as f64 / TARGET_SR as f64 * 1000.0) as u64;
                 }
 
                 // EOF: feed the resampler's carry-over tail, then flush any
@@ -231,33 +192,15 @@ impl ZipformerSession {
                 if let Some(result) = recognizer.get_result(&stream) {
                     let text = result.text.trim().to_string();
                     if !text.is_empty() {
-                        if let Ok(mut c) = collected_for_thread.lock() {
-                            if !c.full_text.is_empty() {
-                                c.full_text.push(' ');
-                            }
-                            c.full_text.push_str(&text);
-                            c.segments.push(TranscriptSegment {
-                                start_ms: utterance_start_ms,
-                                end_ms: total_ms,
-                                speaker: None,
-                                text,
-                            });
-                        }
+                        push_utterance(&mut full_text, &text);
                     }
                 }
 
-                let c = match collected_for_thread.lock() {
-                    Ok(c) => (c.full_text.clone(), c.segments.clone()),
-                    Err(poisoned) => {
-                        let c = poisoned.into_inner();
-                        (c.full_text.clone(), c.segments.clone())
-                    }
-                };
-                c
+                full_text
             })
             .map_err(|e| anyhow!("failed to spawn zipformer thread: {e}"))?;
 
-        Ok((handle, collected))
+        Ok(handle)
     }
 }
 
@@ -266,19 +209,12 @@ impl AsrSession for ZipformerSession {
         // Dropping audio_rx sender (done by caller) causes recv() to return
         // Err, ending the feeder loop. Join to collect the final text.
         if let Some(handle) = self.handle.take() {
-            let (text, _) = handle
+            let text = handle
                 .join()
                 .map_err(|_| anyhow!("zipformer feeder thread panicked"))?;
             Ok(text)
         } else {
             Err(anyhow!("zipformer session already finished"))
         }
-    }
-
-    fn take_segments(&self) -> Vec<TranscriptSegment> {
-        self.collected
-            .lock()
-            .map(|c| c.segments.clone())
-            .unwrap_or_default()
     }
 }

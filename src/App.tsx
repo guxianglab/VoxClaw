@@ -1,12 +1,12 @@
 import { type ReactNode, useState, useEffect } from "react";
-import { AlertCircle, Sparkles, Wrench, X } from "lucide-react";
+import { AlertCircle, Wrench, X } from "lucide-react";
 import { HistoryList } from "./components/HistoryList";
 import { MeetingView } from "./components/MeetingView";
 import { SessionBar } from "./components/SessionBar";
 import { SettingsModal } from "./components/SettingsModal";
 import { StatusSection } from "./components/StatusSection";
 import { TitleBar } from "./components/TitleBar";
-import { api, events, VoiceCommandFeedback } from "./lib/api";
+import { api, events } from "./lib/api";
 import "./index.css";
 
 type ViewTab = "dictation" | "meeting";
@@ -17,7 +17,6 @@ function App() {
   const [needsSetup, setNeedsSetup] = useState(false);
   const [llmError, setLlmError] = useState<string | null>(null);
   const [runtimeNotice, setRuntimeNotice] = useState<string | null>(null);
-  const [voiceFeedback, setVoiceFeedback] = useState<VoiceCommandFeedback | null>(null);
   const [view, setView] = useState<ViewTab>("dictation");
   const [continuousMode, setContinuousMode] = useState(false);
 
@@ -36,7 +35,7 @@ function App() {
       const noDevice = !config.input_device || config.input_device === "";
       const noAsr = !asrStatus.configured;
       setContinuousMode(config.agent_config?.continuous_mode ?? false);
-      // LLM 配置是可选的（纯听写/离线 ASR 不需要），不要强制用户填写。
+      // LLM 配置是可选的（纯听写不需要），不要强制用户填写。
       if (noDevice || noAsr) {
         setNeedsSetup(true);
         setIsSettingsOpen(true);
@@ -46,11 +45,8 @@ function App() {
     const unsubLlmError = events.onLlmError((message) => {
       setLlmError(message);
     });
-    const unsubVoiceFeedback = events.onVoiceCommandFeedback(setVoiceFeedback);
-
     return () => {
       unsubLlmError.then(f => f());
-      unsubVoiceFeedback.then(f => f());
     };
   }, []);
 
@@ -63,16 +59,6 @@ function App() {
 
     return () => window.clearTimeout(timeout);
   }, [llmError]);
-
-  useEffect(() => {
-    if (!voiceFeedback) return;
-
-    const timeout = window.setTimeout(() => {
-      setVoiceFeedback(null);
-    }, 5000);
-
-    return () => window.clearTimeout(timeout);
-  }, [voiceFeedback]);
 
   const handleSettingsClose = (skip = false) => {
     Promise.all([api.getConfig(), api.getAsrStatus()]).then(([config, asrStatus]) => {
@@ -108,7 +94,7 @@ function App() {
 
           {view === "dictation" && continuousMode && <SessionBar />}
 
-          {(runtimeNotice || llmError || voiceFeedback) && (
+          {(runtimeNotice || llmError) && (
             <div className="flex flex-col gap-2">
               {runtimeNotice && (
                 <NoticeBar
@@ -126,21 +112,6 @@ function App() {
                   title="润色异常"
                   message={llmError}
                   onClose={() => setLlmError(null)}
-                />
-              )}
-              {voiceFeedback && (
-                <NoticeBar
-                  tone={
-                    voiceFeedback.level === "error"
-                      ? "red"
-                      : voiceFeedback.level === "success"
-                        ? "emerald"
-                        : "blue"
-                  }
-                  icon={<Sparkles className="h-4 w-4" />}
-                  title="语音控制"
-                  message={voiceFeedback.message}
-                  onClose={() => setVoiceFeedback(null)}
                 />
               )}
             </div>
@@ -165,20 +136,13 @@ function NoticeBar({
   message,
   onClose,
 }: {
-  tone: "amber" | "red" | "emerald" | "blue";
+  tone: "amber" | "red";
   icon: ReactNode;
   title: string;
   message: string;
   onClose: () => void;
 }) {
-  const barColor =
-    tone === "amber"
-      ? "bg-amber-500"
-      : tone === "emerald"
-        ? "bg-emerald-500"
-        : tone === "blue"
-          ? "bg-sky-500"
-          : "bg-red-500";
+  const barColor = tone === "amber" ? "bg-amber-500" : "bg-red-500";
 
   return (
     <div className="relative flex items-start gap-3 overflow-hidden bg-neutral-50 py-3 pr-4 pl-5">

@@ -34,13 +34,12 @@ pub fn save_config(
         .store(config.trigger_toggle, std::sync::atomic::Ordering::Relaxed);
 
     // Rebuild ASR provider if relevant config changed. We build+replace BEFORE
-    // persisting so that a failure (e.g. lock held by an active session, or ONNX
-    // Runtime refusing to re-init) leaves the on-disk config untouched — the UI
+    // persisting so that a failure (e.g. lock held by an active session, or
+    // corrupted model files) leaves the on-disk config untouched — the UI
     // and the persisted state stay consistent, and the user gets a real error.
     // The one exception is a missing local model: the engine can't load yet,
     // but persisting the choice is still correct, so we save + return a notice.
-    let asr_changed = !asr_config_eq(&previous.asr, &config.asr)
-        || !proxy_config_eq(&previous.proxy, &config.proxy);
+    let asr_changed = previous.asr != config.asr || previous.proxy != config.proxy;
     if asr_changed {
         match crate::asr::build_provider(&config.asr, &config.proxy) {
             Ok(provider) => {
@@ -63,21 +62,4 @@ pub fn save_config(
 
     state.save_config(&config).map_err(|e| e.to_string())?;
     Ok(None)
-}
-
-fn asr_config_eq(a: &crate::storage::AsrConfig, b: &crate::storage::AsrConfig) -> bool {
-    a.provider == b.provider
-        && a.volcengine.app_key == b.volcengine.app_key
-        && a.volcengine.access_key == b.volcengine.access_key
-        && a.volcengine.resource_id == b.volcengine.resource_id
-        && a.sensevoice.model_dir == b.sensevoice.model_dir
-        && a.sensevoice.language == b.sensevoice.language
-        && a.sensevoice.use_gpu == b.sensevoice.use_gpu
-        && a.zipformer.model_dir == b.zipformer.model_dir
-        && a.zipformer.enable_endpoint == b.zipformer.enable_endpoint
-        && a.zipformer.use_gpu == b.zipformer.use_gpu
-}
-
-fn proxy_config_eq(a: &crate::storage::ProxyConfig, b: &crate::storage::ProxyConfig) -> bool {
-    a.enabled == b.enabled && a.url == b.url
 }

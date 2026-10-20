@@ -1,17 +1,14 @@
 ﻿import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { AlertCircle, ChevronDown, ChevronRight, Copy, FolderOpen, Loader2, Plus, RotateCcw, Trash2, X } from "lucide-react";
+import { AlertCircle, Copy, FolderOpen, Loader2, Plus, Trash2, X } from "lucide-react";
 import { openPath } from "@tauri-apps/plugin-opener";
 import {
   api,
+  AgentConfig,
   AppConfig,
+  AsrConfig,
   AudioDevice,
-  BrowserSkillOptions,
   LlmConfig,
   PromptProfile,
-  ProxyConfig,
-  SafetyRule,
-  SkillConfig,
-  SkillSubCommandConfig,
   events,
 } from "../lib/api";
 
@@ -21,13 +18,13 @@ interface SettingsModalProps {
   isFirstSetup?: boolean;
 }
 
-type SettingsTab = "audio" | "models" | "polish" | "skills";
+type SettingsTab = "audio" | "models" | "polish" | "agent";
 
 const TABS: Array<{ key: SettingsTab; label: string }> = [
   { key: "audio", label: "录音" },
   { key: "models", label: "模型" },
   { key: "polish", label: "润色" },
-  { key: "skills", label: "技能" },
+  { key: "agent", label: "助手" },
 ];
 
 const toLines = (items: string[]) => items.join("\n");
@@ -37,48 +34,13 @@ const fromLines = (value: string) =>
     .map((item) => item.trim())
     .filter(Boolean);
 
-const toInlineList = (items: string[]) => items.join(" / ");
-const fromInlineList = (value: string) =>
-  value
-    .split(/[\n,，/、]+/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-
-const cloneProfile = (profile: PromptProfile, patch: Partial<PromptProfile> = {}): PromptProfile => ({
-  ...profile,
-  voice_aliases: [...profile.voice_aliases],
-  preserve_rules: [...profile.preserve_rules],
-  glossary: [...profile.glossary],
-  examples: profile.examples.map((example) => ({ ...example })),
-  ...patch,
-});
-
 const makeProfileId = () => `profile_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-
-const mergeDefaultProfiles = (profiles: PromptProfile[], defaults: PromptProfile[]) => {
-  const existingIds = new Set(profiles.map((profile) => profile.id));
-  const restored = defaults
-    .filter((profile) => !existingIds.has(profile.id))
-    .map((profile) => cloneProfile(profile));
-  return [...profiles, ...restored];
-};
-
-const makeBrowserSiteId = () => `browser_site_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-const isBrowserSkill = (skill: SkillConfig) => skill.id === "open_browser";
-
-const ensureBrowserOptions = (skill: SkillConfig): BrowserSkillOptions => ({
-  llm_site_resolution_enabled: skill.browser_options?.llm_site_resolution_enabled ?? true,
-  search_fallback_enabled: skill.browser_options?.search_fallback_enabled ?? true,
-  search_url_template: skill.browser_options?.search_url_template ?? "https://www.bing.com/search?q={query}",
-  sites: skill.browser_options?.sites ?? [],
-});
 
 export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: SettingsModalProps) {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [currentDevice, setCurrentDevice] = useState("");
   const [defaultProfiles, setDefaultProfiles] = useState<PromptProfile[]>([]);
-  const [blankProfile, setBlankProfile] = useState<PromptProfile | null>(null);
   const [audioLevel, setAudioLevel] = useState(0);
   const [testingAudio, setTestingAudio] = useState(false);
   const [testingLlm, setTestingLlm] = useState(false);
@@ -97,9 +59,6 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
     progress: number;
     error: string | null;
   }>({ active: false, file: "", progress: 0, error: null });
-  // SenseVoice / VAD / Zipformer model presence, checked on open + after downloads finish.
-  const [svPresent, setSvPresent] = useState<boolean | null>(null);
-  const [vadPresent, setVadPresent] = useState<boolean | null>(null);
   const [zfPresent, setZfPresent] = useState<boolean | null>(null);
   const timerRef = useRef<number | null>(null);
   const pendingRef = useRef<AppConfig | null>(null);
@@ -120,10 +79,9 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
           window.setTimeout(() => setSaveOk(false), 1500);
         } catch (error) {
           // Surface the backend error (e.g. engine switch blocked by an active
-          // session, or ONNX Runtime refusing to re-init) instead of silently
-          // keeping the old provider. The config was NOT persisted in that case.
-          const msg = error instanceof Error ? error.message : String(error);
-          setSaveError(msg);
+          // session) instead of silently keeping the old provider. The config
+          // was NOT persisted in that case.
+          setSaveError(error instanceof Error ? error.message : String(error));
           console.error("save config failed", error);
         }
       }
@@ -144,7 +102,6 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
     api.getInputDevices().then(setDevices);
     api.getCurrentInputDevice().then(setCurrentDevice);
     api.getDefaultSceneProfiles().then(setDefaultProfiles);
-    api.getDefaultSceneTemplate().then(setBlankProfile);
     setActiveTab("audio");
     setShowWarning(false);
     setLlmResult(null);
@@ -171,21 +128,6 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
 
   useEffect(() => {
     if (!isOpen) return;
-    const unsub = events.onConfigUpdated((nextConfig) => {
-      pendingRef.current = null;
-      setIsSaving(false);
-      setSaveError(null);
-      setSaveNotice(null);
-      setConfig(nextConfig);
-      setLlmResult(null);
-    });
-    return () => {
-      unsub.then((fn) => fn());
-    };
-  }, [isOpen]);
-
-  useEffect(() => {
-    if (!isOpen) return;
     const unsub = events.onAsrModelDownload((evt) => {
       if (evt.phase === "started") {
         setModelDownload({ active: true, file: "", progress: 0, error: null });
@@ -204,373 +146,76 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
     };
   }, [isOpen]);
 
-  // Check SenseVoice + VAD model presence on open, and re-check after a
-  // download finishes (modelDownload.active flips false) so the status badge
-  // updates without reopening the modal.
-  const checkModelPresence = useCallback(async () => {
-    try {
-      let dir = "";
-      if (config?.asr.sensevoice.model_dir) {
-        dir = config.asr.sensevoice.model_dir;
-      } else {
-        dir = await api.getSenseVoiceDefaultDir();
-      }
-      const [sv, vad] = await Promise.all([
-        api.checkSenseVoiceModelPresent(dir),
-        api.checkVadModelPresent(dir),
-      ]);
-      setSvPresent(sv);
-      setVadPresent(vad);
-      // Zipformer model lives in its own directory; fall back to the default
-      // location when no custom dir is configured so the status badge is honest.
-      const zfDir = config?.asr.zipformer.model_dir || (await api.getZipformerDefaultDir());
-      setZfPresent(await api.checkZipformerModelPresent(zfDir));
-    } catch {
-      /* non-fatal: leave badges as unknown */
-    }
-  }, [config?.asr.sensevoice.model_dir]);
-
+  // Re-check after a download finishes so the badge updates without reopening.
+  const zipformerDir = config?.asr.zipformer.model_dir;
   useEffect(() => {
     if (!isOpen) return;
-    checkModelPresence();
-  }, [isOpen, checkModelPresence, modelDownload.active]);
-
-  const handleDownloadSenseVoice = useCallback(async () => {
-    if (!config) return;
-    setModelDownload({ active: true, file: "", progress: 0, error: null });
-    try {
-      const dir = await api.downloadSenseVoiceModel(
-        config.asr.sensevoice.model_dir || undefined,
-      );
-      const next = {
-        ...config,
-        asr: {
-          ...config.asr,
-          sensevoice: { ...config.asr.sensevoice, model_dir: dir },
-        },
-      };
-      setConfig(next);
-      saveLater(next);
-    } catch (e) {
-      setModelDownload({
-        active: false,
-        file: "",
-        progress: 0,
-        error: e instanceof Error ? e.message : String(e),
-      });
-    }
-  }, [config, saveLater]);
-
-  const handleDownloadVad = useCallback(async () => {
-    if (!config) return;
-    // VAD model lives under the SenseVoice model_dir; use the default if blank.
-    setModelDownload({ active: true, file: "", progress: 0, error: null });
-    try {
-      let dir = config.asr.sensevoice.model_dir;
-      if (!dir) {
-        dir = await api.getSenseVoiceDefaultDir();
-        const next = {
-          ...config,
-          asr: {
-            ...config.asr,
-            sensevoice: { ...config.asr.sensevoice, model_dir: dir },
-          },
-        };
-        setConfig(next);
-        saveLater(next);
-      }
-      await api.downloadVadModel(dir);
-    } catch (e) {
-      setModelDownload({
-        active: false,
-        file: "",
-        progress: 0,
-        error: e instanceof Error ? e.message : String(e),
-      });
-    }
-  }, [config, saveLater]);
-
-  const handleDownloadZipformer = useCallback(async () => {
-    if (!config) return;
-    setModelDownload({ active: true, file: "", progress: 0, error: null });
-    try {
-      const dir = await api.downloadZipformerModel(
-        config.asr.zipformer.model_dir || undefined,
-      );
-      const next = {
-        ...config,
-        asr: {
-          ...config.asr,
-          zipformer: { ...config.asr.zipformer, model_dir: dir },
-        },
-      };
-      setConfig(next);
-      saveLater(next);
-    } catch (e) {
-      setModelDownload({
-        active: false,
-        file: "",
-        progress: 0,
-        error: e instanceof Error ? e.message : String(e),
-      });
-    }
-  }, [config, saveLater]);
-
-  const openZipformerDir = useCallback(async () => {
-    const dir = config?.asr.zipformer.model_dir || (await api.getZipformerDefaultDir());
-    openPath(dir);
-  }, [config?.asr.zipformer.model_dir]);
+    (async () => {
+      const dir = zipformerDir || (await api.getZipformerDefaultDir());
+      setZfPresent(await api.checkZipformerModelPresent(dir));
+    })().catch(() => {});
+  }, [isOpen, zipformerDir, modelDownload.active]);
 
   if (!isOpen || !config) return null;
 
-  const updateConfig = <K extends keyof AppConfig>(key: K, value: AppConfig[K]) => {
-    const next = { ...config, [key]: value };
+  const update = (next: AppConfig) => {
     setConfig(next);
     saveLater(next);
   };
 
-  const updateLlm = <K extends keyof LlmConfig>(key: K, value: LlmConfig[K]) => {
-    const next = { ...config, llm_config: { ...config.llm_config, [key]: value } };
-    setConfig(next);
-    saveLater(next);
+  const updateConfig = <K extends keyof AppConfig>(key: K, value: AppConfig[K]) =>
+    update({ ...config, [key]: value });
+
+  const updateAsr = (patch: Partial<AsrConfig>) => updateConfig("asr", { ...config.asr, ...patch });
+
+  const updateLlm = (patch: Partial<LlmConfig>) => {
+    updateConfig("llm_config", { ...config.llm_config, ...patch });
     setLlmResult(null);
   };
 
-  const updateProxy = <K extends keyof ProxyConfig>(key: K, value: ProxyConfig[K]) => {
-    updateConfig("proxy", { ...config.proxy, [key]: value });
+  const updateAgent = <K extends keyof AgentConfig>(key: K, value: AgentConfig[K]) =>
+    updateConfig("agent_config", { ...config.agent_config, [key]: value });
+
+  const downloadZipformer = async () => {
+    setModelDownload({ active: true, file: "", progress: 0, error: null });
+    try {
+      const dir = await api.downloadZipformerModel();
+      const next = { ...config, asr: { ...config.asr, zipformer: { model_dir: dir } } };
+      setConfig(next);
+    } catch (e) {
+      setModelDownload({ active: false, file: "", progress: 0, error: e instanceof Error ? e.message : String(e) });
+    }
   };
 
-  const updateSkill = <K extends keyof SkillConfig>(id: string, key: K, value: SkillConfig[K]) => {
-    updateConfig(
-      "skills",
-      config.skills.map((skill) => (skill.id === id ? { ...skill, [key]: value } : skill)),
-    );
+  const openZipformerDir = async () => {
+    openPath(config.asr.zipformer.model_dir || (await api.getZipformerDefaultDir()));
   };
 
-  const updateAgentConfig = (key: string, value: string | number | boolean | object) => {
-    const next = {
-      ...config,
-      agent_config: { ...config.agent_config, [key]: value },
-    };
-    setConfig(next);
-    saveLater(next);
-  };
-
-  const updateBrowserOptions = (id: string, patch: Partial<BrowserSkillOptions>) => {
-    updateConfig(
-      "skills",
-      config.skills.map((skill) =>
-        skill.id === id
-          ? { ...skill, browser_options: { ...ensureBrowserOptions(skill), ...patch } }
-          : skill,
-      ),
-    );
-  };
-
-  const updateBrowserSubCommand = (
-    skillId: string,
-    commandId: string,
-    patch: Partial<SkillSubCommandConfig>,
-  ) => {
-    updateConfig(
-      "skills",
-      config.skills.map((skill) =>
-        skill.id === skillId
-          ? {
-              ...skill,
-              sub_commands: skill.sub_commands.map((command) =>
-                command.id === commandId ? { ...command, ...patch } : command,
-              ),
-            }
-          : skill,
-      ),
-    );
-  };
-
-  const updateBrowserSite = (skillId: string, siteId: string, patch: Partial<{ name: string; aliases: string; url: string; enabled: boolean }>) => {
-    updateConfig(
-      "skills",
-      config.skills.map((skill) =>
-        skill.id === skillId
-          ? {
-              ...skill,
-              browser_options: {
-                ...ensureBrowserOptions(skill),
-                sites: ensureBrowserOptions(skill).sites.map((site) =>
-                  site.id === siteId ? { ...site, ...patch } : site,
-                ),
-              },
-            }
-          : skill,
-      ),
-    );
-  };
-
-  const addBrowserSite = (skillId: string) => {
-    updateConfig(
-      "skills",
-      config.skills.map((skill) =>
-        skill.id === skillId
-          ? {
-              ...skill,
-              browser_options: {
-                ...ensureBrowserOptions(skill),
-                sites: [
-                  ...ensureBrowserOptions(skill).sites,
-                  {
-                    id: makeBrowserSiteId(),
-                    name: "",
-                    aliases: "",
-                    url: "",
-                    enabled: true,
-                  },
-                ],
-              },
-            }
-          : skill,
-      ),
-    );
-  };
-
-  const removeBrowserSite = (skillId: string, siteId: string) => {
-    updateConfig(
-      "skills",
-      config.skills.map((skill) =>
-        skill.id === skillId
-          ? {
-              ...skill,
-              browser_options: {
-                ...ensureBrowserOptions(skill),
-                sites: ensureBrowserOptions(skill).sites.filter((site) => site.id !== siteId),
-              },
-            }
-          : skill,
-      ),
-    );
-  };
-
-  const active =
-    config.llm_config.profiles.find((profile) => profile.id === config.llm_config.active_profile_id) ??
-    config.llm_config.profiles[0] ??
-    null;
-
-  const activeDefaultProfile =
-    defaultProfiles.find((profile) => profile.id === active?.id) ??
-    defaultProfiles.find((profile) => profile.preset_key === active?.preset_key) ??
-    null;
+  const profiles = config.llm_config.profiles;
+  const active = profiles.find((p) => p.id === config.llm_config.active_profile_id) ?? profiles[0] ?? null;
 
   const updateActive = (patch: Partial<PromptProfile>) => {
     if (!active) return;
-    updateLlm(
-      "profiles",
-      config.llm_config.profiles.map((profile) =>
-        profile.id === active.id ? cloneProfile(profile, patch) : profile,
-      ),
-    );
+    updateLlm({ profiles: profiles.map((p) => (p.id === active.id ? { ...p, ...patch } : p)) });
   };
 
-  const selectScene = (id: string) => {
-    updateLlm("active_profile_id", id);
-  };
-
-  const createProfile = () => {
-    const base = blankProfile ?? active ?? defaultProfiles[0];
-    if (!base) return;
-
+  const addProfile = (base: PromptProfile | null, name: string) => {
     const id = makeProfileId();
-    const profile = cloneProfile(base, {
-      id,
-      name: `场景 ${config.llm_config.profiles.length + 1}`,
-      voice_aliases: [],
-      advanced_instruction: "",
-      expert_mode: false,
-      legacy_imported: false,
-    });
-    const next = {
-      ...config,
-      llm_config: {
-        ...config.llm_config,
-        profiles: [...config.llm_config.profiles, profile],
-        active_profile_id: id,
-      },
-    };
-    setConfig(next);
-    saveLater(next);
-    setLlmResult(null);
-  };
-
-  const copyProfile = () => {
-    if (!active) return;
-    const id = makeProfileId();
-    const copied = cloneProfile(active, {
-      id,
-      name: `${active.name} 副本`,
-    });
-    const next = {
-      ...config,
-      llm_config: {
-        ...config.llm_config,
-        profiles: [...config.llm_config.profiles, copied],
-        active_profile_id: id,
-      },
-    };
-    setConfig(next);
-    saveLater(next);
-    setLlmResult(null);
+    const profile: PromptProfile = base
+      ? { ...base, id, name, preserve_rules: [...base.preserve_rules], glossary: [...base.glossary] }
+      : { id, name, goal: "", tone: "", format_style: "", preserve_rules: [], glossary: [], advanced_instruction: "" };
+    updateLlm({ profiles: [...profiles, profile], active_profile_id: id });
   };
 
   const deleteProfile = () => {
-    if (!active || config.llm_config.profiles.length <= 1) return;
-    const profiles = config.llm_config.profiles.filter((profile) => profile.id !== active.id);
-    const next = {
-      ...config,
-      llm_config: {
-        ...config.llm_config,
-        profiles,
-        active_profile_id: profiles[0].id,
-      },
-    };
-    setConfig(next);
-    saveLater(next);
-    setLlmResult(null);
-  };
-
-  const resetProfile = () => {
-    if (!active) return;
-    const base = activeDefaultProfile ?? blankProfile;
-    if (!base) return;
-
-    const keepLabel = !defaultProfiles.some((profile) => profile.id === active.id);
-    updateActive({
-      name: keepLabel ? active.name : base.name,
-      voice_aliases: keepLabel ? [...active.voice_aliases] : [...base.voice_aliases],
-      preset_key: base.preset_key,
-      goal: base.goal,
-      tone: base.tone,
-      format_style: base.format_style,
-      preserve_rules: [...base.preserve_rules],
-      glossary: [],
-      examples: [],
-      advanced_instruction: "",
-      expert_mode: false,
-      legacy_imported: false,
-    });
+    if (!active || profiles.length <= 1) return;
+    const rest = profiles.filter((p) => p.id !== active.id);
+    updateLlm({ profiles: rest, active_profile_id: rest[0].id });
   };
 
   const restoreDefaults = () => {
-    if (defaultProfiles.length === 0) return;
-    const profiles = mergeDefaultProfiles(config.llm_config.profiles, defaultProfiles);
-    const next = {
-      ...config,
-      llm_config: {
-        ...config.llm_config,
-        profiles,
-        active_profile_id: config.llm_config.active_profile_id || profiles[0]?.id || "",
-      },
-    };
-    setConfig(next);
-    saveLater(next);
-    setLlmResult(null);
+    const ids = new Set(profiles.map((p) => p.id));
+    updateLlm({ profiles: [...profiles, ...defaultProfiles.filter((p) => !ids.has(p.id))] });
   };
 
   const testLlm = async () => {
@@ -613,11 +258,10 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
 
   const close = async () => {
     const asrReady =
-      config.asr.provider === "sense_voice_onnx"
-        ? !!config.asr.sensevoice.model_dir
+      config.asr.provider === "zipformer_streaming"
+        ? !!zfPresent
         : !!config.asr.volcengine.app_key && !!config.asr.volcengine.access_key;
-    const ready = !!config.input_device && asrReady && !!config.llm_config.base_url && !!config.llm_config.api_key;
-    if (isFirstSetup && !ready) {
+    if (isFirstSetup && !(config.input_device && asrReady)) {
       setShowWarning(true);
       return;
     }
@@ -625,39 +269,25 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
     onClose();
   };
 
-  const saveText = isSaving
-    ? "正在保存..."
-    : saveError
-      ? "保存失败，请查看提示"
-      : saveOk
-        ? "已保存"
-        : "自动保存";
+  const saveText = isSaving ? "正在保存..." : saveError ? "保存失败，请查看提示" : saveOk ? "已保存" : "自动保存";
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-neutral-950/20 p-4 backdrop-blur-sm" onClick={close}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-neutral-950/20 p-4" onClick={close}>
       <div
-        className="flex max-h-[88vh] w-full max-w-5xl flex-col overflow-hidden bg-neutral-50 shadow-[0_4px_24px_rgba(0,0,0,0.06)]"
+        className="flex max-h-[88vh] w-full max-w-5xl flex-col overflow-hidden bg-neutral-50"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-neutral-200 px-6 py-5">
           <div className="min-w-0">
             <h2 className="text-xl font-semibold text-neutral-900">{isFirstSetup ? "完成设置" : "设置"}</h2>
-            <div
-              className={`mt-1 text-sm ${
-                saveError ? "text-red-600" : "text-neutral-500"
-              }`}
-            >
-              {isFirstSetup ? "先配置麦克风和模型服务" : saveText}
+            <div className={`mt-1 text-sm ${saveError ? "text-red-600" : "text-neutral-500"}`}>
+              {isFirstSetup ? "先配置麦克风和语音识别" : saveText}
             </div>
             {saveError && !isFirstSetup && (
-              <div className="mt-2 max-w-xl text-xs leading-relaxed text-red-600">
-                {saveError}
-              </div>
+              <div className="mt-2 max-w-xl text-xs leading-relaxed text-red-600">{saveError}</div>
             )}
             {saveNotice && !saveError && !isFirstSetup && (
-              <div className="mt-2 max-w-xl text-xs leading-relaxed text-amber-600">
-                {saveNotice}
-              </div>
+              <div className="mt-2 max-w-xl text-xs leading-relaxed text-amber-600">{saveNotice}</div>
             )}
           </div>
           <button
@@ -676,9 +306,7 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
                   key={tab.key}
                   onClick={() => setActiveTab(tab.key)}
                   className={`flex items-center gap-2 px-2 py-2.5 text-left text-sm transition-colors ${
-                    activeTab === tab.key
-                      ? "text-neutral-900"
-                      : "text-neutral-500 hover:text-neutral-700"
+                    activeTab === tab.key ? "text-neutral-900" : "text-neutral-500 hover:text-neutral-700"
                   }`}
                 >
                   <span
@@ -696,53 +324,42 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
             {activeTab === "audio" && (
               <div className="space-y-5">
                 <Section title="触发方式">
-                  <div className="space-y-3">
-                    <ToggleRow
-                      title="鼠标中键"
-                      desc="单击切换听写，长按执行技能"
-                      active={config.trigger_mouse}
-                      onToggle={() => updateConfig("trigger_mouse", !config.trigger_mouse)}
-                    />
-                    <ToggleRow
-                      title="右 Alt"
-                      desc="单击切换听写，长按执行技能"
-                      active={config.trigger_toggle}
-                      onToggle={() => updateConfig("trigger_toggle", !config.trigger_toggle)}
-                    />
-                  </div>
+                  <ToggleRow
+                    title="鼠标中键"
+                    desc="单击切换听写，长按唤起 AI 助手"
+                    active={config.trigger_mouse}
+                    onToggle={() => updateConfig("trigger_mouse", !config.trigger_mouse)}
+                  />
+                  <ToggleRow
+                    title="右 Alt"
+                    desc="单击切换听写，长按唤起 AI 助手"
+                    active={config.trigger_toggle}
+                    onToggle={() => updateConfig("trigger_toggle", !config.trigger_toggle)}
+                  />
                 </Section>
 
                 <Section title="输入设备">
-                  <Surface>
-                    <label className="mb-2 block text-xs text-neutral-400">设备</label>
-                    <div className="flex flex-col gap-3 lg:flex-row">
-                      <select
-                        value={currentDevice}
-                        onChange={(event) => switchDevice(event.target.value)}
-                        className="input-underline w-full py-2 text-neutral-900"
-                      >
-                        <option value="">默认设备</option>
-                        {devices.map((device) => (
-                          <option key={device.id} value={device.id}>
-                            {device.name}
-                            {device.is_default ? "（默认）" : ""}
-                          </option>
-                        ))}
-                      </select>
-                      <div className="flex gap-3">
-                        <ActionButton onClick={() => api.getInputDevices().then(setDevices)}>刷新设备</ActionButton>
-                        <PrimaryButton onClick={toggleAudio}>
-                          {testingAudio ? "停止测试" : "测试麦克风"}
-                        </PrimaryButton>
-                      </div>
+                  <label className="mb-2 block text-xs text-neutral-400">设备</label>
+                  <div className="flex flex-col gap-3 lg:flex-row">
+                    <select
+                      value={currentDevice}
+                      onChange={(event) => switchDevice(event.target.value)}
+                      className="input-underline w-full py-2 text-neutral-900"
+                    >
+                      <option value="">默认设备</option>
+                      {devices.map((device) => (
+                        <option key={device.id} value={device.id}>
+                          {device.name}
+                          {device.is_default ? "（默认）" : ""}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="flex gap-3">
+                      <ActionButton onClick={() => api.getInputDevices().then(setDevices)}>刷新设备</ActionButton>
+                      <PrimaryButton onClick={toggleAudio}>{testingAudio ? "停止测试" : "测试麦克风"}</PrimaryButton>
                     </div>
-                    <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-neutral-200">
-                      <div
-                        className="h-full rounded-full bg-chinese-indigo transition-all"
-                        style={{ width: `${audioLevel * 100}%` }}
-                      />
-                    </div>
-                  </Surface>
+                  </div>
+                  <ProgressBar value={audioLevel} />
                 </Section>
               </div>
             )}
@@ -750,310 +367,105 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
             {activeTab === "models" && (
               <div className="space-y-5">
                 <Section title="语音识别引擎">
-                  <div className="mb-3 flex flex-wrap gap-2">
-                    <EngineButton
-                      label="豆包 (云端流式)"
+                  <div className="flex flex-wrap gap-2">
+                    <ChipButton
+                      label="豆包（云端流式）"
                       active={config.asr.provider === "volcengine"}
-                      onClick={() =>
-                        updateConfig("asr", { ...config.asr, provider: "volcengine" })
-                      }
+                      onClick={() => updateAsr({ provider: "volcengine" })}
                     />
-                    <EngineButton
-                      label="SenseVoice (本地离线)"
-                      active={config.asr.provider === "sense_voice_onnx"}
-                      onClick={() =>
-                        updateConfig("asr", { ...config.asr, provider: "sense_voice_onnx" })
-                      }
-                    />
-                    <EngineButton
-                      label="Zipformer (本地流式)"
+                    <ChipButton
+                      label="Zipformer（本地流式）"
                       active={config.asr.provider === "zipformer_streaming"}
-                      onClick={() =>
-                        updateConfig("asr", { ...config.asr, provider: "zipformer_streaming" })
-                      }
+                      onClick={() => updateAsr({ provider: "zipformer_streaming" })}
                     />
                   </div>
 
-                  {config.asr.provider === "volcengine" && (
-                    <>
-                      <div className="mb-4 rounded-md bg-neutral-100 px-4 py-3">
-                        <div className="flex items-center gap-2 text-sm">
-                          <span className="font-medium text-neutral-700">豆包</span>
-                          <span className="text-neutral-400">·</span>
-                          <span className="text-neutral-500">火山引擎流式语音识别服务</span>
-                        </div>
-                      </div>
-                      <div className="grid gap-3 md:grid-cols-2">
+                  {config.asr.provider === "volcengine" ? (
+                    <div className="grid gap-3 md:grid-cols-2">
+                      {(["app_key", "access_key", "resource_id"] as const).map((key) => (
                         <Field
-                          label="app_key"
-                          value={config.asr.volcengine.app_key}
-                          onChange={(value) =>
-                            updateConfig("asr", {
-                              ...config.asr,
-                              volcengine: { ...config.asr.volcengine, app_key: value },
-                            })
-                          }
+                          key={key}
+                          label={key}
+                          value={config.asr.volcengine[key]}
+                          onChange={(value) => updateAsr({ volcengine: { ...config.asr.volcengine, [key]: value } })}
                         />
-                        <Field
-                          label="access_key"
-                          value={config.asr.volcengine.access_key}
-                          onChange={(value) =>
-                            updateConfig("asr", {
-                              ...config.asr,
-                              volcengine: { ...config.asr.volcengine, access_key: value },
-                            })
-                          }
-                        />
-                        <Field
-                          label="resource_id"
-                          value={config.asr.volcengine.resource_id}
-                          onChange={(value) =>
-                            updateConfig("asr", {
-                              ...config.asr,
-                              volcengine: { ...config.asr.volcengine, resource_id: value },
-                            })
-                          }
-                        />
-                      </div>
-                    </>
-                  )}
-
-                  {config.asr.provider === "sense_voice_onnx" && (
-                    <>
-                      <div className="mb-4 rounded-md bg-neutral-100 px-4 py-3 text-sm text-neutral-500">
-                        SenseVoiceSmall · 多语种本地离线模型，首次使用需下载 ~240 MB
-                      </div>
-                      <div className="grid gap-3">
-                        <Field
-                          label="模型目录"
-                          value={config.asr.sensevoice.model_dir}
-                          placeholder="留空将下载到默认位置"
-                          onChange={(value) =>
-                            updateConfig("asr", {
-                              ...config.asr,
-                              sensevoice: { ...config.asr.sensevoice, model_dir: value },
-                            })
-                          }
-                        />
-                        <div>
-                          <label className="mb-1 block text-xs text-neutral-400">语言</label>
-                          <select
-                            value={config.asr.sensevoice.language || "auto"}
-                            onChange={(event) =>
-                              updateConfig("asr", {
-                                ...config.asr,
-                                sensevoice: {
-                                  ...config.asr.sensevoice,
-                                  language: event.target.value,
-                                },
-                              })
-                            }
-                            className="input-underline w-full py-2 text-sm text-neutral-900"
-                          >
-                            <option value="auto">自动</option>
-                            <option value="zh">中文</option>
-                            <option value="en">English</option>
-                            <option value="ja">日本語</option>
-                            <option value="ko">한국어</option>
-                            <option value="yue">粤语</option>
-                          </select>
-                        </div>
-                        <ToggleRow
-                          title="使用 GPU"
-                          desc="启用 ONNX Runtime GPU provider (需要相应运行时)"
-                          active={config.asr.sensevoice.use_gpu}
-                          onToggle={() =>
-                            updateConfig("asr", {
-                              ...config.asr,
-                              sensevoice: {
-                                ...config.asr.sensevoice,
-                                use_gpu: !config.asr.sensevoice.use_gpu,
-                              },
-                            })
-                          }
-                        />
-                      </div>
-
-                      <div className="mt-4 flex items-center gap-3">
-                        <PrimaryButton
-                          onClick={handleDownloadSenseVoice}
-                          disabled={modelDownload.active}
-                        >
-                          {modelDownload.active
-                            ? "下载中…"
-                            : svPresent
-                              ? "重新下载"
-                              : "下载模型"}
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <p className="text-xs text-neutral-400">中英双语本地流式模型，无需联网。首次使用需下载约 300 MB。</p>
+                      <div className="flex flex-wrap items-center gap-3">
+                        <PrimaryButton onClick={downloadZipformer} disabled={modelDownload.active}>
+                          {modelDownload.active ? "下载中…" : zfPresent ? "重新下载" : "下载模型"}
                         </PrimaryButton>
+                        <ActionButton onClick={openZipformerDir}>
+                          <FolderOpen className="mr-1 inline h-3.5 w-3.5" />
+                          打开模型目录
+                        </ActionButton>
                         {modelDownload.active && (
-                          <span className="truncate text-xs text-neutral-500">
-                            {modelDownload.file || "正在准备…"}
-                          </span>
+                          <span className="truncate text-xs text-neutral-500">{modelDownload.file || "正在准备…"}</span>
                         )}
-                        {svPresent && !modelDownload.active && (
-                          <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-700">
-                            ✓ 已下载
-                          </span>
-                        )}
+                        {zfPresent && !modelDownload.active && <span className="text-xs text-emerald-600">已下载</span>}
                         {!modelDownload.active && modelDownload.error && (
-                          <span className="truncate text-xs text-red-500">
-                            {modelDownload.error}
-                          </span>
+                          <span className="truncate text-xs text-red-600">{modelDownload.error}</span>
                         )}
                       </div>
-                      {modelDownload.active && (
-                        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-neutral-200">
-                          <div
-                            className="h-full rounded-full bg-chinese-indigo transition-all"
-                            style={{ width: `${Math.round(modelDownload.progress * 100)}%` }}
-                          />
-                        </div>
-                      )}
-
-                      {/* VAD model — required for meeting mode (segmented inference) */}
-                      <div className="mt-5 border-t border-neutral-100 pt-4">
-                        <div className="mb-3 rounded-md bg-neutral-100 px-4 py-3 text-sm text-neutral-500">
-                          VAD 模型 · 会议模式必需，用于语音分段，首次使用需下载 ~1 MB
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <PrimaryButton
-                            onClick={handleDownloadVad}
-                            disabled={modelDownload.active}
-                          >
-                            {modelDownload.active
-                              ? "下载中…"
-                              : vadPresent
-                                ? "重新下载"
-                                : "下载 VAD 模型"}
-                          </PrimaryButton>
-                          {vadPresent && !modelDownload.active && (
-                            <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-700">
-                              ✓ 已下载
-                            </span>
-                          )}
-                          {!modelDownload.active && modelDownload.error && (
-                            <span className="truncate text-xs text-red-500">
-                              {modelDownload.error}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </>
-                  )}
-
-                  {config.asr.provider === "zipformer_streaming" && (
-                    <>
-                      <div className="mb-4 rounded-md bg-neutral-100 px-4 py-3 text-sm text-neutral-500">
-                        Streaming Zipformer · 中英双语本地流式引擎，会议实时转写推荐。
-                        模型约 ~300 MB，首次使用需下载。
-                      </div>
-                      <div className="grid gap-3">
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs text-neutral-400">模型目录</span>
-                          <ActionButton onClick={openZipformerDir}>
-                            <FolderOpen className="mr-1 inline h-3.5 w-3.5" />
-                            打开模型目录
-                          </ActionButton>
-                        </div>
-                        <ToggleRow
-                          title="使用 GPU"
-                          desc="启用 ONNX Runtime GPU provider (需要相应运行时)"
-                          active={config.asr.zipformer.use_gpu}
-                          onToggle={() =>
-                            updateConfig("asr", {
-                              ...config.asr,
-                              zipformer: {
-                                ...config.asr.zipformer,
-                                use_gpu: !config.asr.zipformer.use_gpu,
-                              },
-                            })
-                          }
-                        />
-                      </div>
-
-                      <div className="mt-4 flex items-center gap-3">
-                        <PrimaryButton
-                          onClick={handleDownloadZipformer}
-                          disabled={modelDownload.active}
-                        >
-                          {modelDownload.active
-                            ? "下载中…"
-                            : zfPresent
-                              ? "重新下载"
-                              : "下载模型"}
-                        </PrimaryButton>
-                        {modelDownload.active && (
-                          <span className="truncate text-xs text-neutral-500">
-                            {modelDownload.file || "正在准备…"}
-                          </span>
-                        )}
-                        {zfPresent && !modelDownload.active && (
-                          <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-700">
-                            ✓ 已下载
-                          </span>
-                        )}
-                        {!modelDownload.active && modelDownload.error && (
-                          <span className="truncate text-xs text-red-500">
-                            {modelDownload.error}
-                          </span>
-                        )}
-                      </div>
-                      {modelDownload.active && (
-                        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-neutral-200">
-                          <div
-                            className="h-full rounded-full bg-chinese-indigo transition-all"
-                            style={{ width: `${Math.round(modelDownload.progress * 100)}%` }}
-                          />
-                        </div>
-                      )}
-                    </>
+                      {modelDownload.active && <ProgressBar value={modelDownload.progress} />}
+                    </div>
                   )}
                 </Section>
 
                 <Section title="语言模型">
-                  <div className="mb-4 rounded-md bg-neutral-100 px-4 py-3">
-                    <div className="flex items-center gap-2 text-sm">
-                      <span className="font-medium text-neutral-700">OpenAI 兼容</span>
-                      <span className="text-neutral-400">·</span>
-                      <span className="text-neutral-500">支持 OpenAI 格式的任意模型服务</span>
-                    </div>
-                  </div>
-                  <div className="space-y-3">
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <Field label="base_url" value={config.llm_config.base_url} onChange={(value) => updateLlm("base_url", value)} />
-                      <Field label="model" value={config.llm_config.model} onChange={(value) => updateLlm("model", value)} />
-                    </div>
-                    <Field
-                      label="api_key"
-                      type="password"
-                      value={config.llm_config.api_key}
-                      onChange={(value) => updateLlm("api_key", value)}
+                  <p className="text-xs text-neutral-400">润色、AI 助手和会议总结共用此配置。</p>
+                  <div className="flex flex-wrap gap-2">
+                    <ChipButton
+                      label="OpenAI 兼容"
+                      active={config.llm_config.provider_type !== "anthropic"}
+                      onClick={() => updateLlm({ provider_type: "openai_compatible" })}
                     />
-                    <div className="flex flex-wrap items-center gap-3">
-                      <PrimaryButton onClick={testLlm} disabled={testingLlm}>
-                        {testingLlm && <Loader2 className="h-4 w-4 animate-spin" />}
-                        {testingLlm ? "测试中..." : "测试连接"}
-                      </PrimaryButton>
-                      {llmResult && (
-                        <span className={`text-sm ${llmResult.success ? "text-emerald-600" : "text-red-600"}`}>
-                          {llmResult.message}
-                        </span>
-                      )}
-                    </div>
+                    <ChipButton
+                      label="Anthropic"
+                      active={config.llm_config.provider_type === "anthropic"}
+                      onClick={() => updateLlm({ provider_type: "anthropic" })}
+                    />
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <Field label="base_url" value={config.llm_config.base_url} onChange={(value) => updateLlm({ base_url: value })} />
+                    <Field label="model" value={config.llm_config.model} onChange={(value) => updateLlm({ model: value })} />
+                  </div>
+                  <Field
+                    label="api_key"
+                    type="password"
+                    value={config.llm_config.api_key}
+                    onChange={(value) => updateLlm({ api_key: value })}
+                  />
+                  <div className="flex flex-wrap items-center gap-3">
+                    <PrimaryButton onClick={testLlm} disabled={testingLlm}>
+                      {testingLlm && <Loader2 className="h-4 w-4 animate-spin" />}
+                      {testingLlm ? "测试中..." : "测试连接"}
+                    </PrimaryButton>
+                    {llmResult && (
+                      <span className={`text-sm ${llmResult.success ? "text-emerald-600" : "text-red-600"}`}>
+                        {llmResult.message}
+                      </span>
+                    )}
                   </div>
                 </Section>
 
                 <Section title="网络代理">
                   <ToggleRow
                     title="启用代理"
-                    desc="语音识别和语言模型共用同一个代理"
+                    desc="语音识别和语言模型共用，仅支持 http:// 代理"
                     active={config.proxy.enabled}
-                    onToggle={() => updateProxy("enabled", !config.proxy.enabled)}
+                    onToggle={() => updateConfig("proxy", { ...config.proxy, enabled: !config.proxy.enabled })}
                   />
                   {config.proxy.enabled && (
-                    <div className="mt-3">
-                      <Field label="代理地址" value={config.proxy.url} onChange={(value) => updateProxy("url", value)} />
-                    </div>
+                    <Field
+                      label="代理地址"
+                      value={config.proxy.url}
+                      placeholder="http://127.0.0.1:7890"
+                      onChange={(value) => updateConfig("proxy", { ...config.proxy, url: value })}
+                    />
                   )}
                 </Section>
               </div>
@@ -1061,358 +473,113 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
 
             {activeTab === "polish" && (
               <div className="space-y-5">
-                <Section title="启用功能">
+                <Section title="启用">
                   <ToggleRow
-                    title="强制开启润色"
-                    desc="开启后所有普通听写都走润色；关闭后通过双击开始或双击结束决定本次是否润色"
+                    title="始终润色"
+                    desc="开启后所有听写都经过润色；关闭时双击触发键可单次润色"
                     active={config.llm_config.enabled}
-                    onToggle={() => updateLlm("enabled", !config.llm_config.enabled)}
+                    onToggle={() => updateLlm({ enabled: !config.llm_config.enabled })}
                   />
                 </Section>
 
-                <Section title="场景设置">
+                <Section title="场景">
+                  <div className="flex flex-wrap gap-2">
+                    {profiles.map((profile) => (
+                      <ChipButton
+                        key={profile.id}
+                        label={profile.name}
+                        active={active?.id === profile.id}
+                        onClick={() => updateLlm({ active_profile_id: profile.id })}
+                      />
+                    ))}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1">
+                    <MiniButton onClick={() => addProfile(null, `场景 ${profiles.length + 1}`)} icon={<Plus className="h-4 w-4" />} title="新增场景" />
+                    <MiniButton onClick={() => active && addProfile(active, `${active.name} 副本`)} icon={<Copy className="h-4 w-4" />} title="复制当前场景" />
+                    <MiniButton onClick={deleteProfile} icon={<Trash2 className="h-4 w-4" />} disabled={profiles.length <= 1} title="删除当前场景" />
+                    <ActionButton onClick={restoreDefaults}>恢复默认场景</ActionButton>
+                  </div>
+
                   {active && (
                     <div className="space-y-4">
-                      <Surface>
-                        <div className="space-y-4">
-                          <div className="flex flex-wrap gap-2">
-                            {config.llm_config.profiles.map((profile) => (
-                              <button
-                                key={profile.id}
-                                onClick={() => selectScene(profile.id)}
-                                className={`px-3 py-1.5 text-sm transition-colors ${
-                                  config.llm_config.active_profile_id === profile.id
-                                    ? "bg-neutral-900 text-neutral-50"
-                                    : "bg-neutral-100 text-neutral-500 hover:bg-neutral-200 hover:text-neutral-700"
-                                }`}
-                              >
-                                {profile.name}
-                              </button>
-                            ))}
-                          </div>
-
-                          <div className="flex flex-wrap items-center gap-2">
-                            <MiniButton onClick={createProfile} icon={<Plus className="h-4 w-4" />} title="新增场景" />
-                            <MiniButton onClick={copyProfile} icon={<Copy className="h-4 w-4" />} title="复制当前场景" />
-                            <MiniButton onClick={deleteProfile} icon={<Trash2 className="h-4 w-4" />} disabled={config.llm_config.profiles.length <= 1} title="删除当前场景" />
-                            <MiniButton onClick={resetProfile} icon={<RotateCcw className="h-4 w-4" />} title="重置当前场景" />
-                            <ActionButton onClick={restoreDefaults}>恢复默认场景</ActionButton>
-                          </div>
-                        </div>
-                      </Surface>
-
-                      <div className="flex items-center gap-2 text-xs text-neutral-400">
-                        <span>{active.id}</span>
-                        <span className="h-1 w-1 rounded-full bg-neutral-300" />
-                        <span>{activeDefaultProfile ? "内置场景" : "自定义场景"}</span>
-                      </div>
-
                       <div className="grid gap-3 md:grid-cols-2">
                         <Field label="场景名称" value={active.name} onChange={(value) => updateActive({ name: value })} />
-                        <Field
-                          label="语音别名"
-                          value={toInlineList(active.voice_aliases)}
-                          onChange={(value) => updateActive({ voice_aliases: fromInlineList(value) })}
-                        />
-                      </div>
-
-                      <div className="grid gap-3 md:grid-cols-2">
-                        <Area label="目标" value={active.goal} onChange={(value) => updateActive({ goal: value })} />
                         <Field label="语气" value={active.tone} onChange={(value) => updateActive({ tone: value })} />
                       </div>
-
-                      <Area
-                        label="输出格式"
-                        value={active.format_style}
-                        onChange={(value) => updateActive({ format_style: value })}
-                      />
-
+                      <Area label="目标" value={active.goal} onChange={(value) => updateActive({ goal: value })} />
+                      <Area label="输出格式" value={active.format_style} onChange={(value) => updateActive({ format_style: value })} />
                       <div className="grid gap-3 lg:grid-cols-2">
                         <Area
-                          label="保留规则"
+                          label="保留规则（每行一条）"
                           value={toLines(active.preserve_rules)}
                           onChange={(value) => updateActive({ preserve_rules: fromLines(value) })}
                         />
                         <Area
-                          label="术语表"
+                          label="术语表（每行一条）"
                           value={toLines(active.glossary)}
                           onChange={(value) => updateActive({ glossary: fromLines(value) })}
                         />
                       </div>
-
-                      <ToggleRow
-                        title="高级模式"
-                        desc="追加更细的补充指令"
-                        active={active.expert_mode}
-                        onToggle={() => updateActive({ expert_mode: !active.expert_mode })}
+                      <Area
+                        label="补充指令"
+                        value={active.advanced_instruction}
+                        onChange={(value) => updateActive({ advanced_instruction: value })}
+                        placeholder="额外规则、结构偏好或禁止改写项（可选）"
                       />
-
-                      {active.expert_mode && (
-                        <Area
-                          label="高级指令"
-                          value={active.advanced_instruction}
-                          onChange={(value) => updateActive({ advanced_instruction: value })}
-                          rows={5}
-                          placeholder="补充额外规则、语气要求、结构偏好或禁止改写项"
-                        />
-                      )}
                     </div>
                   )}
                 </Section>
               </div>
             )}
 
-            {activeTab === "skills" && (
+            {activeTab === "agent" && (
               <div className="space-y-5">
-                <Section title="长按模式">
-                  <div className="space-y-3">
-                    <div className="flex items-center gap-2">
-                      {(["skill", "agent"] as const).map((mode) => (
-                        <button
-                          key={mode}
-                          onClick={() => {
-                            const next = { ...config, agent_config: { ...config.agent_config, mode } };
-                            setConfig(next);
-                            saveLater(next);
-                          }}
-                          className={`px-3 py-1.5 text-sm font-medium transition-opacity ${
-                            config.agent_config.mode === mode
-                              ? "bg-neutral-900 text-neutral-50"
-                              : "text-neutral-500 hover:bg-neutral-200 hover:text-neutral-900"
-                          }`}
-                        >
-                          {mode === "skill" ? "技能模式" : "AI Agent"}
-                        </button>
-                      ))}
-                    </div>
-                    <p className="text-xs text-neutral-400">
-                      选择长按触发键时的处理方式。技能模式通过关键词匹配执行操作，AI Agent 通过大模型理解指令。
-                    </p>
-                  </div>
-                </Section>
-                {config.agent_config.mode === "agent" && (
-                <>
-                <Section title="Agent 配置">
-                  <div className="space-y-4">
-                    <div className="mb-4 bg-neutral-100 px-4 py-3">
-                      <div className="flex items-center gap-2 text-sm">
-                        <span className="font-medium text-neutral-700">LLM Provider</span>
-                        <span className="text-neutral-400">·</span>
-                        <span className="text-neutral-500">支持 OpenAI / Anthropic 格式的模型服务</span>
-                      </div>
-                    </div>
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <Field
-                        label="Base URL"
-                        value={config.agent_config.provider_base_url || ""}
-                        onChange={(value) => updateAgentConfig("provider_base_url", value)}
-                        placeholder="留空则使用 LLM 设置中的 URL"
-                      />
-                      <Field
-                        label="API Key"
-                        value={config.agent_config.provider_api_key || ""}
-                        onChange={(value) => updateAgentConfig("provider_api_key", value)}
-                        type="password"
-                      />
-                      <Field
-                        label="Model"
-                        value={config.agent_config.provider_model || ""}
-                        onChange={(value) => updateAgentConfig("provider_model", value)}
-                        placeholder="留空则使用 LLM 设置中的模型"
-                      />
-                      <Field
-                        label="Thinking Level"
-                        value={config.agent_config.thinking_level || "none"}
-                        onChange={(value) => updateAgentConfig("thinking_level", value)}
-                      />
-                    </div>
-
-                    <ToggleRow
-                      title="Confirm dangerous operations"
-                      desc="执行危险操作前弹窗确认"
-                      active={config.agent_config.confirm_dangerous}
-                      onToggle={() => updateAgentConfig("confirm_dangerous", !config.agent_config.confirm_dangerous)}
+                <Section title="AI 助手">
+                  <p className="text-xs text-neutral-400">
+                    长按触发键说出指令，助手可以打开网页和应用、截图、读写剪贴板、写邮件。使用“模型”页中的语言模型。
+                  </p>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <Field
+                      label="思考强度"
+                      value={config.agent_config.thinking_level}
+                      placeholder="none / low / medium / high"
+                      onChange={(value) => updateAgent("thinking_level", value)}
                     />
-
-                    <Area
-                      label="系统提示词"
-                      value={config.agent_config.system_prompt || ""}
-                      onChange={(value) => updateAgentConfig("system_prompt", value)}
-                      rows={4}
-                      placeholder="留空使用内置默认提示词。可自定义 Agent 的人格、行为规则和输出格式。"
-                    />
-
-                    <Area
-                      label="常驻上下文"
-                      value={config.agent_config.persistent_context || ""}
-                      onChange={(value) => updateAgentConfig("persistent_context", value)}
-                      rows={3}
-                      placeholder="每次 Agent 执行时都会注入的上下文信息，如当前项目路径、常用缩写等。"
-                    />
-
-                    <ToggleRow
-                      title="自动注入环境信息"
-                      desc="自动追加操作系统、用户名等信息到系统提示词"
-                      active={config.agent_config.auto_inject_env}
-                      onToggle={() => updateAgentConfig("auto_inject_env", !config.agent_config.auto_inject_env)}
-                    />
-
-                    <div className="flex items-center justify-between py-2">
-                      <div>
-                        <div className="text-sm text-neutral-900">Max Iterations</div>
-                        <div className="mt-0.5 text-xs text-neutral-400">最大迭代次数</div>
-                      </div>
-                      <input
-                        type="number"
-                        min="1"
-                        max="50"
-                        value={config.agent_config.max_iterations}
-                        onChange={(e) => updateAgentConfig("max_iterations", parseInt(e.target.value) || 10)}
-                        className="input-underline w-20 py-2 text-right text-sm text-neutral-900"
-                      />
-                    </div>
-
-                    <div className="flex items-center justify-between py-2">
-                      <div>
-                        <div className="text-sm text-neutral-900">历史上下文条数</div>
-                        <div className="mt-0.5 text-xs text-neutral-400">注入最近 N 次对话摘要，0 为关闭</div>
-                      </div>
-                      <input
-                        type="number"
-                        min="0"
-                        max="20"
-                        value={config.agent_config.context_history_count ?? 0}
-                        onChange={(e) => updateAgentConfig("context_history_count", parseInt(e.target.value) || 0)}
-                        className="input-underline w-20 py-2 text-right text-sm text-neutral-900"
-                      />
-                    </div>
-
-                    <ToggleRow
-                      title="连续会话模式"
-                      desc="开启后多次语音指令共享上下文，可追问/纠正；关闭则每次都是独立单轮"
-                      active={config.agent_config.continuous_mode ?? false}
-                      onToggle={() =>
-                        updateAgentConfig("continuous_mode", !(config.agent_config.continuous_mode ?? false))
-                      }
-                    />
-
-                    <ToggleRow
-                      title="自动上下文压缩"
-                      desc="对话过长时自动总结早期内容，避免超出模型 context 上限"
-                      active={config.agent_config.compaction?.enabled ?? true}
-                      onToggle={() => {
-                        const cur = config.agent_config.compaction ?? {
-                          enabled: true,
-                          reserve_tokens: 16384,
-                          keep_recent_tokens: 20000,
-                        };
-                        updateAgentConfig("compaction", { ...cur, enabled: !cur.enabled });
-                      }}
+                    <NumberField
+                      label="最大迭代次数"
+                      value={config.agent_config.max_iterations}
+                      min={1}
+                      max={50}
+                      onChange={(value) => updateAgent("max_iterations", value || 10)}
                     />
                   </div>
+                  <Area
+                    label="系统提示词"
+                    value={config.agent_config.system_prompt}
+                    onChange={(value) => updateAgent("system_prompt", value)}
+                    rows={4}
+                    placeholder="留空使用内置默认提示词"
+                  />
+                  <Area
+                    label="常驻上下文"
+                    value={config.agent_config.persistent_context}
+                    onChange={(value) => updateAgent("persistent_context", value)}
+                    placeholder="每次执行都会注入的信息，如常用缩写、个人偏好"
+                  />
+                  <NumberField
+                    label="历史上下文条数（0 为关闭）"
+                    value={config.agent_config.context_history_count}
+                    min={0}
+                    max={20}
+                    onChange={(value) => updateAgent("context_history_count", value)}
+                  />
+                  <ToggleRow
+                    title="连续会话"
+                    desc="多次语音指令共享上下文，可追问或纠正"
+                    active={config.agent_config.continuous_mode}
+                    onToggle={() => updateAgent("continuous_mode", !config.agent_config.continuous_mode)}
+                  />
                 </Section>
-                <Section title="安全规则">
-                  <div className="space-y-4">
-                    <div className="space-y-2">
-                      <label className="mb-1 block text-xs text-neutral-400">默认策略</label>
-                      <div className="flex gap-4">
-                        {(["confirm", "deny", "allow"] as const).map((policy) => (
-                          <label key={policy} className="flex items-center gap-1.5 text-sm cursor-pointer">
-                            <input
-                              type="radio"
-                              name="safety_policy"
-                              value={policy}
-                              checked={config.agent_config.default_safety_policy === policy}
-                              onChange={() => updateAgentConfig("default_safety_policy", policy)}
-                              className="accent-neutral-900"
-                            />
-                            {policy === "confirm" ? "弹窗确认" : policy === "deny" ? "自动拒绝" : "自动允许"}
-                          </label>
-                        ))}
-                      </div>
-                      <p className="text-xs text-neutral-400">未命中任何规则时的处理方式</p>
-                    </div>
-
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between">
-                        <label className="mb-1 block text-xs text-neutral-400">规则列表</label>
-                        <ActionButton
-                          onClick={() => {
-                            const newRule: SafetyRule = { tool: "*", action: "deny" };
-                            const next = {
-                              ...config,
-                              agent_config: {
-                                ...config.agent_config,
-                                safety_rules: [...config.agent_config.safety_rules, newRule],
-                              },
-                            };
-                            setConfig(next);
-                            saveLater(next);
-                          }}
-                        >
-                          + 添加规则
-                        </ActionButton>
-                      </div>
-                      {config.agent_config.safety_rules.length === 0 && (
-                        <p className="text-xs text-neutral-400">暂无规则，所有操作将按默认策略处理</p>
-                      )}
-                      {config.agent_config.safety_rules.map((rule, idx) => (
-                        <div key={idx} className="flex items-center gap-2 text-sm py-2">
-                          <span className="text-neutral-900">{rule.tool}</span>
-                          {rule.command_pattern && (
-                            <span className="text-neutral-500">{rule.command_pattern}</span>
-                          )}
-                          {rule.path_scope && rule.path_scope.length > 0 && (
-                            <span className="text-neutral-500">path: {rule.path_scope.join(", ")}</span>
-                          )}
-                          <span className={`ml-auto text-xs ${
-                            rule.action === "allow" ? "text-emerald-600" : "text-red-600"
-                          }`}>
-                            {rule.action === "allow" ? "允许" : "拒绝"}
-                          </span>
-                          <button
-                            onClick={() => {
-                              const rules = [...config.agent_config.safety_rules];
-                              rules.splice(idx, 1);
-                              const next = {
-                                ...config,
-                                agent_config: { ...config.agent_config, safety_rules: rules },
-                              };
-                              setConfig(next);
-                              saveLater(next);
-                            }}
-                            className="text-neutral-400 hover:text-red-500 text-lg leading-none"
-                          >
-                            ×
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </Section>
-                </>
-                )}
-                {config.agent_config.mode === "skill" && (
-                <Section title="技能列表">
-                  <div className="space-y-3">
-                    {config.skills.map((skill) => (
-                      <SkillCard
-                        key={skill.id}
-                        skill={skill}
-                        onToggle={() => updateSkill(skill.id, "enabled", !skill.enabled)}
-                        onKeywordsChange={(value) => updateSkill(skill.id, "keywords", value)}
-                        onSubCommandChange={(commandId, patch) =>
-                          updateBrowserSubCommand(skill.id, commandId, patch)
-                        }
-                        onBrowserOptionChange={(patch) => updateBrowserOptions(skill.id, patch)}
-                        onBrowserSiteChange={(siteId, patch) => updateBrowserSite(skill.id, siteId, patch)}
-                        onAddBrowserSite={() => addBrowserSite(skill.id)}
-                        onRemoveBrowserSite={(siteId) => removeBrowserSite(skill.id, siteId)}
-                      />
-                    ))}
-                  </div>
-                </Section>
-                )}
               </div>
             )}
           </div>
@@ -1420,18 +587,13 @@ export function SettingsModal({ isOpen, onClose, isFirstSetup = false }: Setting
       </div>
 
       {showWarning && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-neutral-950/25 p-4 backdrop-blur-sm">
-          <div
-            className="w-full max-w-sm bg-neutral-50 p-6 shadow-[0_4px_24px_rgba(0,0,0,0.06)]"
-            onClick={(event) => event.stopPropagation()}
-          >
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-neutral-950/25 p-4">
+          <div className="w-full max-w-sm bg-neutral-50 p-6" onClick={(event) => event.stopPropagation()}>
             <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center bg-amber-100 text-amber-600">
-                <AlertCircle className="h-5 w-5" />
-              </div>
+              <AlertCircle className="h-5 w-5 flex-shrink-0 text-amber-600" />
               <div>
                 <h3 className="text-base font-semibold text-neutral-900">还没有完成设置</h3>
-                <p className="mt-1 text-sm text-neutral-500">请先选择输入设备，并填写语音识别和语言模型的凭证。</p>
+                <p className="mt-1 text-sm text-neutral-500">请先选择输入设备，并配置语音识别引擎。</p>
               </div>
             </div>
             <div className="mt-6 flex justify-end gap-2">
@@ -1461,8 +623,12 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
   );
 }
 
-function Surface({ children }: { children: ReactNode }) {
-  return <div className="py-2">{children}</div>;
+function ProgressBar({ value }: { value: number }) {
+  return (
+    <div className="h-1.5 overflow-hidden rounded-full bg-neutral-200">
+      <div className="h-full rounded-full bg-chinese-indigo transition-all" style={{ width: `${Math.round(value * 100)}%` }} />
+    </div>
+  );
 }
 
 function ToggleRow({
@@ -1477,10 +643,7 @@ function ToggleRow({
   onToggle: () => void;
 }) {
   return (
-    <button
-      onClick={onToggle}
-      className="group flex w-full items-start justify-between gap-4 py-2 text-left"
-    >
+    <button onClick={onToggle} className="group flex w-full items-start justify-between gap-4 py-2 text-left">
       <div>
         <div className="text-sm text-neutral-900">{title}</div>
         <div className="mt-0.5 text-xs text-neutral-400">{desc}</div>
@@ -1494,9 +657,7 @@ function ToggleRow({
         />
         <div
           className={`absolute top-0 h-4 w-4 transition-all duration-200 ease-out ${
-            active
-              ? "left-3.5 bg-neutral-900"
-              : "left-0 border-2 border-neutral-300 bg-neutral-50"
+            active ? "left-3.5 bg-neutral-900" : "left-0 border-2 border-neutral-300 bg-neutral-50"
           }`}
         />
       </div>
@@ -1554,6 +715,34 @@ function Field({
   );
 }
 
+function NumberField({
+  label,
+  value,
+  min,
+  max,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <div>
+      <label className="mb-1 block text-xs text-neutral-400">{label}</label>
+      <input
+        type="number"
+        min={min}
+        max={max}
+        value={value}
+        onChange={(event) => onChange(parseInt(event.target.value) || 0)}
+        className="input-underline w-full py-2 text-sm text-neutral-900"
+      />
+    </div>
+  );
+}
+
 function Area({
   label,
   value,
@@ -1581,13 +770,7 @@ function Area({
   );
 }
 
-function ActionButton({
-  children,
-  onClick,
-}: {
-  children: ReactNode;
-  onClick: () => void;
-}) {
+function ActionButton({ children, onClick }: { children: ReactNode; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
@@ -1618,255 +801,15 @@ function PrimaryButton({
   );
 }
 
-function EngineButton({
-  label,
-  active,
-  onClick,
-}: {
-  label: string;
-  active: boolean;
-  onClick: () => void;
-}) {
+function ChipButton({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
       className={`px-3 py-1.5 text-sm transition-colors ${
-        active
-          ? "bg-neutral-900 text-neutral-50"
-          : "bg-neutral-100 text-neutral-600 hover:bg-neutral-200"
+        active ? "bg-neutral-900 text-neutral-50" : "bg-neutral-100 text-neutral-500 hover:bg-neutral-200 hover:text-neutral-700"
       }`}
     >
       {label}
     </button>
   );
 }
-
-function SkillCard({
-  skill,
-  onToggle,
-  onKeywordsChange,
-  onSubCommandChange,
-  onBrowserOptionChange,
-  onBrowserSiteChange,
-  onAddBrowserSite,
-  onRemoveBrowserSite,
-}: {
-  skill: SkillConfig;
-  onToggle: () => void;
-  onKeywordsChange: (value: string) => void;
-  onSubCommandChange: (commandId: string, patch: Partial<SkillSubCommandConfig>) => void;
-  onBrowserOptionChange: (patch: Partial<BrowserSkillOptions>) => void;
-  onBrowserSiteChange: (
-    siteId: string,
-    patch: Partial<{ name: string; aliases: string; url: string; enabled: boolean }>,
-  ) => void;
-  onAddBrowserSite: () => void;
-  onRemoveBrowserSite: (siteId: string) => void;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const [subSkillsExpanded, setSubSkillsExpanded] = useState(false);
-  const browserOptions = ensureBrowserOptions(skill);
-  const browserSkill = isBrowserSkill(skill);
-  const hasSubCommands = skill.sub_commands.length > 0;
-
-  return (
-    <div className="border-b border-neutral-200">
-      <div className="flex items-center justify-between gap-4 py-3">
-        <button
-          onClick={() => setExpanded(!expanded)}
-          className="flex flex-1 items-center gap-2 text-left"
-        >
-          {expanded ? (
-            <ChevronDown className="h-4 w-4 flex-shrink-0 text-neutral-400" />
-          ) : (
-            <ChevronRight className="h-4 w-4 flex-shrink-0 text-neutral-400" />
-          )}
-          <span className="text-sm text-neutral-900">{skill.name}</span>
-        </button>
-        <button
-          onClick={onToggle}
-          className="relative h-4 w-7 flex-shrink-0"
-        >
-          <div className="absolute left-0.5 right-0.5 top-1/2 h-0.5 -translate-y-1/2 bg-neutral-200" />
-          <div
-            className={`absolute left-0.5 top-1/2 h-0.5 -translate-y-1/2 bg-neutral-900 transition-all duration-200 ease-out ${
-              skill.enabled ? "w-6" : "w-0"
-            }`}
-          />
-          <div
-            className={`absolute top-0 h-4 w-4 transition-all duration-200 ease-out ${
-              skill.enabled
-                ? "left-3.5 bg-neutral-900"
-                : "left-0 border-2 border-neutral-300 bg-neutral-50"
-            }`}
-          />
-        </button>
-      </div>
-      {expanded && (
-        <div className="pb-4 pl-6">
-          <div className="mb-3 text-xs text-neutral-400">命中后执行，不粘贴文本</div>
-          <Field
-            label="关键词"
-            value={skill.keywords}
-            onChange={onKeywordsChange}
-          />
-
-          {hasSubCommands && (
-            <div className="mt-6 space-y-5">
-              <div className="space-y-3">
-                <button
-                  onClick={() => setSubSkillsExpanded((value) => !value)}
-                  className="flex w-full items-center justify-between py-2 text-left"
-                >
-                  <div>
-                    <div className="text-xs font-medium uppercase tracking-wider text-neutral-400">子技能</div>
-                  </div>
-                  {subSkillsExpanded ? (
-                    <ChevronDown className="h-4 w-4 flex-shrink-0 text-neutral-400" />
-                  ) : (
-                    <ChevronRight className="h-4 w-4 flex-shrink-0 text-neutral-400" />
-                  )}
-                </button>
-
-                {subSkillsExpanded && (
-                  <div className="grid gap-3 md:grid-cols-2">
-                    {skill.sub_commands.map((command) => (
-                      <div key={command.id} className="py-2">
-                        <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <div className="text-sm text-neutral-900">{command.name}</div>
-                            <div className="mt-0.5 text-xs text-neutral-400">{command.id}</div>
-                          </div>
-                          <button
-                            onClick={() => onSubCommandChange(command.id, { enabled: !command.enabled })}
-                            className="relative h-4 w-7 flex-shrink-0"
-                          >
-                            <div className="absolute left-0.5 right-0.5 top-1/2 h-0.5 -translate-y-1/2 bg-neutral-200" />
-                            <div
-                              className={`absolute left-0.5 top-1/2 h-0.5 -translate-y-1/2 bg-neutral-900 transition-all duration-200 ease-out ${
-                                command.enabled ? "w-6" : "w-0"
-                              }`}
-                            />
-                            <div
-                              className={`absolute top-0 h-4 w-4 transition-all duration-200 ease-out ${
-                                command.enabled
-                                  ? "left-3.5 bg-neutral-900"
-                                  : "left-0 border-2 border-neutral-300 bg-neutral-50"
-                              }`}
-                            />
-                          </button>
-                        </div>
-                        <div className="mt-3">
-                          <label className="mb-1 block text-xs text-neutral-400">关键词</label>
-                          <input
-                            value={command.keywords}
-                            onChange={(event) => onSubCommandChange(command.id, { keywords: event.target.value })}
-                            className="input-underline w-full py-2 text-sm text-neutral-900"
-                          />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {browserSkill && (
-                <div className="space-y-3">
-                <div className="border-b border-neutral-200 pb-2 text-xs font-medium uppercase tracking-wider text-neutral-400">网址解析</div>
-                <ToggleRow
-                  title="未命中时使用 LLM 解析"
-                  desc="借助已配置的大模型把站点名称转成公开网址"
-                  active={browserOptions.llm_site_resolution_enabled}
-                  onToggle={() =>
-                    onBrowserOptionChange({
-                      llm_site_resolution_enabled: !browserOptions.llm_site_resolution_enabled,
-                    })
-                  }
-                />
-                <ToggleRow
-                  title="解析失败时改为搜索"
-                  desc="当网址无法精确解析时，用搜索引擎打开原始关键词"
-                  active={browserOptions.search_fallback_enabled}
-                  onToggle={() =>
-                    onBrowserOptionChange({
-                      search_fallback_enabled: !browserOptions.search_fallback_enabled,
-                    })
-                  }
-                />
-                <Field
-                  label="搜索 URL 模板"
-                  value={browserOptions.search_url_template}
-                  onChange={(value) => onBrowserOptionChange({ search_url_template: value })}
-                />
-                </div>
-              )}
-
-              {browserSkill && (
-                <div className="space-y-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="border-b border-neutral-200 pb-2 text-xs font-medium uppercase tracking-wider text-neutral-400">站点映射</div>
-                  <ActionButton onClick={onAddBrowserSite}>新增站点</ActionButton>
-                </div>
-                {browserOptions.sites.length === 0 ? (
-                  <div className="text-xs text-neutral-400">还没有站点映射，未命中时会优先走 LLM 或搜索兜底。</div>
-                ) : (
-                  browserOptions.sites.map((site) => (
-                    <div key={site.id} className="space-y-3 py-2">
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="text-xs text-neutral-400">{site.id}</div>
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => onBrowserSiteChange(site.id, { enabled: !site.enabled })}
-                            className="relative h-4 w-7 flex-shrink-0"
-                          >
-                            <div className="absolute left-0.5 right-0.5 top-1/2 h-0.5 -translate-y-1/2 bg-neutral-200" />
-                            <div
-                              className={`absolute left-0.5 top-1/2 h-0.5 -translate-y-1/2 bg-neutral-900 transition-all duration-200 ease-out ${
-                                site.enabled ? "w-6" : "w-0"
-                              }`}
-                            />
-                            <div
-                              className={`absolute top-0 h-4 w-4 transition-all duration-200 ease-out ${
-                                site.enabled
-                                  ? "left-3.5 bg-neutral-900"
-                                  : "left-0 border-2 border-neutral-300 bg-neutral-50"
-                              }`}
-                            />
-                          </button>
-                          <MiniButton
-                            onClick={() => onRemoveBrowserSite(site.id)}
-                            icon={<Trash2 className="h-4 w-4" />}
-                            title="删除站点"
-                          />
-                        </div>
-                      </div>
-                      <div className="grid gap-3 md:grid-cols-2">
-                        <Field
-                          label="名称"
-                          value={site.name}
-                          onChange={(value) => onBrowserSiteChange(site.id, { name: value })}
-                        />
-                        <Field
-                          label="别名"
-                          value={site.aliases}
-                          onChange={(value) => onBrowserSiteChange(site.id, { aliases: value })}
-                        />
-                      </div>
-                      <Field
-                        label="URL"
-                        value={site.url}
-                        onChange={(value) => onBrowserSiteChange(site.id, { url: value })}
-                      />
-                    </div>
-                  ))
-                )}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
