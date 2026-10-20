@@ -8,7 +8,7 @@ use crate::agent::core::request::StopReason;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
     AgentStart,
-    AgentEnd { result: AgentResult },
+    AgentEnd { result: AgentResult, stop_reason: StopReason },
     TurnStart { turn: u32 },
     TurnEnd { turn: u32 },
     MessageStart,
@@ -83,6 +83,7 @@ mod tests {
                 text: "done".into(),
                 actions: vec![],
             },
+            stop_reason: StopReason::Stop,
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"agent_end""#));

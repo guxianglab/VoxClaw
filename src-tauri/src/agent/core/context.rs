@@ -25,7 +25,7 @@ impl ContextConverter for DefaultConverter {
                     result.push(LlmMessage::system(content));
                 }
                 AgentMessage::User { content, .. } => match content {
-                    UserContent::Text(text) => result.push(LlmMessage::user(text)),
+                    UserContent::Text { text } => result.push(LlmMessage::user(text)),
                     // Phase 1 stub: providers don't accept images yet, so we
                     // surface a placeholder to keep the conversation aligned.
                     UserContent::Image { mime_type, data } => result.push(LlmMessage::user(
@@ -45,7 +45,14 @@ impl ContextConverter for DefaultConverter {
                                 },
                             })
                             .collect();
-                        result.push(LlmMessage::assistant_tool_calls(calls));
+                        // Keep the assistant's preamble alongside the calls —
+                        // both OpenAI and Anthropic accept text + tool calls in
+                        // one assistant message.
+                        let msg = match content.as_ref().filter(|t| !t.is_empty()) {
+                            Some(text) => LlmMessage::assistant_with_tool_calls(text, calls),
+                            None => LlmMessage::assistant_tool_calls(calls),
+                        };
+                        result.push(msg);
                     } else if let Some(text) = content {
                         result.push(LlmMessage::assistant_text(text));
                     }
@@ -55,7 +62,7 @@ impl ContextConverter for DefaultConverter {
                     content,
                     ..
                 } => match content {
-                    ToolResultContent::Text(text) => {
+                    ToolResultContent::Text { text } => {
                         result.push(LlmMessage::tool_result(tool_call_id, text));
                     }
                     ToolResultContent::Image { mime_type, data } => {
@@ -145,7 +152,7 @@ fn estimate_chars(msg: &AgentMessage) -> usize {
     match msg {
         AgentMessage::System { content } => content.len(),
         AgentMessage::User { content, .. } => match content {
-            UserContent::Text(t) => t.len(),
+            UserContent::Text { text: t } => t.len(),
             UserContent::Image { data, .. } => data.len() / 4, // rough proxy for tokens
         },
         AgentMessage::Assistant { content, tool_calls, .. } => {
@@ -153,7 +160,7 @@ fn estimate_chars(msg: &AgentMessage) -> usize {
                 + tool_calls.iter().map(|tc| tc.arguments.len()).sum::<usize>()
         }
         AgentMessage::ToolResult { content, .. } => match content {
-            ToolResultContent::Text(t) => t.len(),
+            ToolResultContent::Text { text: t } => t.len(),
             ToolResultContent::Image { data, .. } => data.len() / 4,
         },
     }

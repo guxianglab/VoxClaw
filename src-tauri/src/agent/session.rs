@@ -90,11 +90,13 @@ fn session_path(data_dir: &Path, session_id: &str) -> PathBuf {
 }
 
 /// Append-only session store. Holds an in-memory cursor to the last entry id
-/// so subsequent appends can chain `parent_id`.
+/// and an open append handle to the file, so repeated appends cost one
+/// buffered write instead of a full reopen + rescan.
 pub struct SessionStore {
     pub session_id: String,
     pub data_dir: PathBuf,
     last_entry_id: Option<String>,
+    file: Option<fs::File>,
 }
 
 impl SessionStore {
@@ -119,10 +121,12 @@ impl SessionStore {
         let line = serde_json::to_string(&header)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         writeln!(f, "{}", line)?;
+        drop(f);
         Ok(Self {
             session_id,
             data_dir: data_dir.to_path_buf(),
             last_entry_id: None,
+            file: None,
         })
     }
 
@@ -151,6 +155,7 @@ impl SessionStore {
             session_id: session_id.to_string(),
             data_dir: data_dir.to_path_buf(),
             last_entry_id,
+            file: None,
         })
     }
 
@@ -159,12 +164,17 @@ impl SessionStore {
     }
 
     /// Append an entry, automatically chaining `parent_id` to the last one.
+    /// The file handle is opened once and kept for the store's lifetime.
     pub fn append(&mut self, kind: SessionEntryKind) -> std::io::Result<SessionEntry> {
         let entry = SessionEntry::new(self.last_entry_id.clone(), kind);
         let line = serde_json::to_string(&entry)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        let mut f = OpenOptions::new().append(true).open(self.path())?;
+        if self.file.is_none() {
+            self.file = Some(OpenOptions::new().append(true).open(self.path())?);
+        }
+        let f = self.file.as_mut().expect("append handle just opened");
         writeln!(f, "{}", line)?;
+        f.flush()?;
         self.last_entry_id = Some(entry.id.clone());
         Ok(entry)
     }
@@ -241,7 +251,7 @@ fn read_summary(path: &Path) -> Option<SessionSummary> {
             if let SessionEntryKind::Message { message } = &entry.kind {
                 match message {
                     AgentMessage::User { content, .. } => {
-                        if let crate::agent::core::message::UserContent::Text(t) = content {
+                        if let crate::agent::core::message::UserContent::Text { text: t } = content {
                             last_user = Some(t.clone());
                         }
                     }

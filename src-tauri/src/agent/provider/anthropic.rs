@@ -1,9 +1,13 @@
 use async_trait::async_trait;
-use futures_util::stream;
+use futures_util::StreamExt;
 use serde_json::{json, Value};
+use std::collections::HashSet;
+use tokio::sync::mpsc;
 
 use crate::agent::core::request::*;
+use crate::agent::core::usage::Usage;
 use crate::agent::error::AgentError;
+use crate::agent::provider::sse::{data_payload, SseBuffer};
 use crate::agent::provider::{LlmProvider, LlmStream, ProviderCapabilities};
 use crate::http_client::build_client;
 use crate::state::preview_text;
@@ -109,82 +113,175 @@ impl AnthropicProvider {
 
         (system, api_messages)
     }
+}
 
-    /// Parse Anthropic Messages API response into stream events.
-    /// Handles text, thinking, and tool_use content blocks.
-    fn parse_response(&self, body: &Value) -> Vec<LlmStreamEvent> {
-        let mut events = Vec::new();
+/// Per-response accumulator for an Anthropic SSE stream.
+#[derive(Default)]
+struct StreamState {
+    /// Content-block indices that are `tool_use` blocks.
+    tool_indices: HashSet<usize>,
+    stop_reason: Option<StopReason>,
+    usage: Usage,
+    has_usage: bool,
+}
 
-        if let Some(content) = body.get("content").and_then(Value::as_array) {
-            for block in content {
-                let btype = block.get("type").and_then(Value::as_str).unwrap_or("");
+fn stop_reason_from_anthropic(reason: &str) -> StopReason {
+    match reason {
+        "end_turn" | "stop_sequence" => StopReason::Stop,
+        "tool_use" => StopReason::ToolCalls,
+        "max_tokens" => StopReason::MaxTokens,
+        "refusal" => StopReason::Refusal,
+        other => StopReason::Error(other.to_string()),
+    }
+}
 
-                if btype == "text" {
-                    if let Some(text) = block.get("text").and_then(Value::as_str) {
-                        events.push(LlmStreamEvent::TextDelta(text.to_string()));
-                    }
-                } else if btype == "thinking" {
-                    if let Some(text) = block.get("thinking").and_then(Value::as_str) {
-                        events.push(LlmStreamEvent::ThinkingDelta(text.to_string()));
-                    }
-                } else if btype == "tool_use" {
-                    let id = block
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string();
-                    let name = block
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string();
-                    let input = block.get("input").cloned().unwrap_or(json!({}));
+fn read_usage(usage: &Value, target: &mut Usage) {
+    if let Some(v) = usage.get("input_tokens").and_then(Value::as_u64) {
+        target.input = v;
+    }
+    if let Some(v) = usage.get("output_tokens").and_then(Value::as_u64) {
+        target.output = v;
+    }
+    if let Some(v) = usage.get("cache_read_input_tokens").and_then(Value::as_u64) {
+        target.cache_read = v;
+    }
+    if let Some(v) = usage.get("cache_creation_input_tokens").and_then(Value::as_u64) {
+        target.cache_write = v;
+    }
+}
 
+/// Map one SSE `data:` JSON payload onto stream events.
+/// Returns `Err` for in-stream API errors so the run aborts with the message.
+fn parse_event(
+    value: &Value,
+    state: &mut StreamState,
+) -> Result<Vec<LlmStreamEvent>, AgentError> {
+    let mut events = Vec::new();
+    let event_type = value.get("type").and_then(Value::as_str).unwrap_or("");
+
+    match event_type {
+        "message_start" => {
+            if let Some(usage) = value.get("message").and_then(|m| m.get("usage")) {
+                read_usage(usage, &mut state.usage);
+                state.has_usage = true;
+            }
+        }
+        "content_block_start" => {
+            let index = value.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+            if let Some(block) = value.get("content_block") {
+                if block.get("type").and_then(Value::as_str) == Some("tool_use") {
+                    state.tool_indices.insert(index);
                     events.push(LlmStreamEvent::ToolCallStart {
-                        index: 0,
-                        id,
-                        name,
+                        index,
+                        id: block.get("id").and_then(Value::as_str).unwrap_or("").to_string(),
+                        name: block
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
                     });
-                    events.push(LlmStreamEvent::ToolCallDelta {
-                        index: 0,
-                        arguments_delta: input.to_string(),
-                    });
-                    events.push(LlmStreamEvent::ToolCallEnd { index: 0 });
                 }
             }
         }
-
-        if let Some(usage) = body.get("usage") {
-            let input = usage.get("input_tokens").and_then(Value::as_u64).unwrap_or(0);
-            let output = usage.get("output_tokens").and_then(Value::as_u64).unwrap_or(0);
-            let cache_read = usage
-                .get("cache_read_input_tokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            let cache_write = usage
-                .get("cache_creation_input_tokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            events.push(LlmStreamEvent::Usage(crate::agent::core::usage::Usage {
-                input,
-                output,
-                cache_read,
-                cache_write,
-                total: input + output,
-                ..Default::default()
-            }));
+        "content_block_delta" => {
+            let index = value.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+            let delta_type = value
+                .get("delta")
+                .and_then(|d| d.get("type"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            match delta_type {
+                "text_delta" => {
+                    if let Some(text) = value
+                        .get("delta")
+                        .and_then(|d| d.get("text"))
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.is_empty())
+                    {
+                        events.push(LlmStreamEvent::TextDelta(text.to_string()));
+                    }
+                }
+                "thinking_delta" => {
+                    if let Some(text) = value
+                        .get("delta")
+                        .and_then(|d| d.get("thinking"))
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.is_empty())
+                    {
+                        events.push(LlmStreamEvent::ThinkingDelta(text.to_string()));
+                    }
+                }
+                "input_json_delta" => {
+                    if let Some(partial) = value
+                        .get("delta")
+                        .and_then(|d| d.get("partial_json"))
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.is_empty())
+                    {
+                        events.push(LlmStreamEvent::ToolCallDelta {
+                            index,
+                            arguments_delta: partial.to_string(),
+                        });
+                    }
+                }
+                _ => {}
+            }
         }
-
-        let stop_reason = match body.get("stop_reason").and_then(Value::as_str) {
-            Some("end_turn") => StopReason::Stop,
-            Some("tool_use") => StopReason::ToolCalls,
-            Some("max_tokens") => StopReason::MaxTokens,
-            _ => StopReason::Stop,
-        };
-        events.push(LlmStreamEvent::Done { stop_reason });
-
-        events
+        "content_block_stop" => {
+            let index = value.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+            if state.tool_indices.contains(&index) {
+                events.push(LlmStreamEvent::ToolCallEnd { index });
+            }
+        }
+        "message_delta" => {
+            if let Some(reason) = value
+                .get("delta")
+                .and_then(|d| d.get("stop_reason"))
+                .and_then(Value::as_str)
+            {
+                state.stop_reason = Some(stop_reason_from_anthropic(reason));
+            }
+            if let Some(usage) = value.get("usage") {
+                read_usage(usage, &mut state.usage);
+                state.has_usage = true;
+            }
+        }
+        "message_stop" => {
+            // Terminal event: flush usage + done.
+            let mut indices: Vec<_> = state.tool_indices.iter().copied().collect();
+            indices.sort_unstable();
+            for index in indices {
+                if !events
+                    .iter()
+                    .any(|e| matches!(e, LlmStreamEvent::ToolCallEnd { index: i } if *i == index))
+                {
+                    events.push(LlmStreamEvent::ToolCallEnd { index });
+                }
+            }
+            if state.has_usage {
+                let mut usage = state.usage.clone();
+                usage.total = usage.input + usage.output;
+                events.push(LlmStreamEvent::Usage(usage));
+            }
+            events.push(LlmStreamEvent::Done {
+                stop_reason: state.stop_reason.take().unwrap_or(StopReason::Stop),
+            });
+        }
+        "error" => {
+            let message = value
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(Value::as_str)
+                .unwrap_or("unknown Anthropic stream error");
+            return Err(AgentError::Provider(format!(
+                "Anthropic stream error: {}",
+                message
+            )));
+        }
+        _ => {} // ping and unknown events are ignored
     }
+
+    Ok(events)
 }
 
 #[async_trait]
@@ -198,7 +295,7 @@ impl LlmProvider for AnthropicProvider {
             thinking: true,
             vision: true,
             tool_calling: true,
-            streaming: false, // Native Anthropic SSE uses a different event format; deferred to Phase 4
+            streaming: true,
         }
     }
 
@@ -210,6 +307,7 @@ impl LlmProvider for AnthropicProvider {
             "model": request.model,
             "messages": messages,
             "max_tokens": request.max_tokens.unwrap_or(4096),
+            "stream": true,
         });
 
         if let Some(sys) = system {
@@ -258,29 +356,74 @@ impl LlmProvider for AnthropicProvider {
             .map_err(|e| AgentError::Provider(format!("Request failed: {}", e)))?;
 
         let status = response.status();
-        let response_text = response.text().await.unwrap_or_default();
-        println!("[AGENT] Anthropic response status: {}", status);
-
         if !status.is_success() {
+            let response_text = response.text().await.unwrap_or_default();
             let preview = Self::response_preview(&response_text, 400);
-            eprintln!("[AGENT] Anthropic error response preview: {}", preview);
             return Err(AgentError::Provider(format!(
                 "API error ({}): {}",
                 status, preview
             )));
         }
 
-        let body: Value = serde_json::from_str(&response_text)
-            .map_err(|e| {
-                AgentError::Provider(format!(
-                    "Parse error: {} | raw response preview: {}",
-                    e,
-                    Self::response_preview(&response_text, 500)
-                ))
-            })?;
+        // Same pattern as the OpenAI provider: parse SSE on a dedicated task;
+        // dropping the returned stream aborts the HTTP connection.
+        let (tx, rx) = mpsc::channel::<Result<LlmStreamEvent, AgentError>>(64);
+        tokio::spawn(async move {
+            let mut sse = SseBuffer::new();
+            let mut state = StreamState::default();
+            let mut body = response.bytes_stream();
+            while let Some(chunk) = body.next().await {
+                let bytes = match chunk {
+                    Ok(b) => b,
+                    Err(e) => {
+                        let _ = tx
+                            .send(Err(AgentError::Provider(format!(
+                                "Stream read error: {}",
+                                e
+                            ))))
+                            .await;
+                        return;
+                    }
+                };
+                sse.push_chunk(&bytes);
+                while let Some(line) = sse.next_line() {
+                    let Some(data) = data_payload(&line) else {
+                        continue;
+                    };
+                    let Ok(value) = serde_json::from_str::<Value>(data) else {
+                        continue;
+                    };
+                    match parse_event(&value, &mut state) {
+                        Ok(events) => {
+                            for event in events {
+                                if tx.send(Ok(event)).await.is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Err(e)).await;
+                            return;
+                        }
+                    }
+                }
+            }
+            // Socket closed without message_stop: terminate the stream anyway.
+            let mut indices: Vec<_> = state.tool_indices.iter().copied().collect();
+            indices.sort_unstable();
+            for index in indices {
+                let _ = tx.send(Ok(LlmStreamEvent::ToolCallEnd { index })).await;
+            }
+            let _ = tx
+                .send(Ok(LlmStreamEvent::Done {
+                    stop_reason: state.stop_reason.take().unwrap_or(StopReason::Stop),
+                }))
+                .await;
+        });
 
-        let events = self.parse_response(&body);
-        Ok(Box::pin(stream::iter(events.into_iter().map(Ok))))
+        Ok(Box::pin(futures_util::stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|item| (item, rx))
+        })))
     }
 }
 
@@ -314,7 +457,7 @@ mod tests {
         assert!(caps.thinking);
         assert!(caps.vision);
         assert!(caps.tool_calling);
-        assert!(!caps.streaming); // non-streaming for now
+        assert!(caps.streaming);
     }
 
     #[test]
@@ -382,45 +525,108 @@ mod tests {
         assert_eq!(result_content[0]["tool_use_id"], "call_1");
     }
 
+    fn event(json: &str) -> Value {
+        serde_json::from_str(json).unwrap()
+    }
+
     #[test]
-    fn parse_response_text_and_stop() {
-        let provider = AnthropicProvider::new("https://api.anthropic.com", "k", "m", &Default::default()).unwrap();
-        let body = json!({
-            "content": [{"type": "text", "text": "Hello!"}],
-            "stop_reason": "end_turn"
-        });
-        let events = provider.parse_response(&body);
-        assert_eq!(events.len(), 2);
+    fn parse_stream_text_and_stop() {
+        let mut state = StreamState::default();
+        let events = parse_event(
+            &event(r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello!"}}"#),
+            &mut state,
+        )
+        .unwrap();
         assert!(matches!(&events[0], LlmStreamEvent::TextDelta(t) if t == "Hello!"));
+
+        let events = parse_event(
+            &event(r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}"#),
+            &mut state,
+        )
+        .unwrap();
+        assert!(events.is_empty());
+
+        let events = parse_event(&event(r#"{"type":"message_stop"}"#), &mut state).unwrap();
+        assert!(matches!(&events[0], LlmStreamEvent::Usage(u) if u.output == 7));
         assert!(matches!(&events[1], LlmStreamEvent::Done { stop_reason } if *stop_reason == StopReason::Stop));
     }
 
     #[test]
-    fn parse_response_tool_use() {
-        let provider = AnthropicProvider::new("https://api.anthropic.com", "k", "m", &Default::default()).unwrap();
-        let body = json!({
-            "content": [{"type": "tool_use", "id": "tu_1", "name": "read_file", "input": {"path": "/tmp/test"}}],
-            "stop_reason": "tool_use"
-        });
-        let events = provider.parse_response(&body);
-        assert!(matches!(&events[0], LlmStreamEvent::ToolCallStart { id, name, .. } if id == "tu_1" && name == "read_file"));
-        assert!(matches!(&events[3], LlmStreamEvent::Done { stop_reason } if *stop_reason == StopReason::ToolCalls));
+    fn parse_stream_parallel_tool_use_uses_block_indices() {
+        let mut state = StreamState::default();
+
+        // Two tool_use blocks at indices 0 and 1 — the old non-streaming
+        // parser hardcoded index 0 for both and corrupted the arguments.
+        let events = parse_event(
+            &event(r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tu_1","name":"file_read","input":{}}}"#),
+            &mut state,
+        )
+        .unwrap();
+        assert!(matches!(&events[0], LlmStreamEvent::ToolCallStart { index, id, name } if *index == 0 && id == "tu_1" && name == "file_read"));
+
+        let events = parse_event(
+            &event(r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu_2","name":"bash","input":{}}}"#),
+            &mut state,
+        )
+        .unwrap();
+        assert!(matches!(&events[0], LlmStreamEvent::ToolCallStart { index, id, .. } if *index == 1 && id == "tu_2"));
+
+        let events = parse_event(
+            &event(r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"command\":"}}"#),
+            &mut state,
+        )
+        .unwrap();
+        assert!(matches!(&events[0], LlmStreamEvent::ToolCallDelta { index, arguments_delta }
+            if *index == 1 && arguments_delta.contains("command")));
+
+        let events = parse_event(
+            &event(r#"{"type":"content_block_stop","index":0}"#),
+            &mut state,
+        )
+        .unwrap();
+        assert!(matches!(&events[0], LlmStreamEvent::ToolCallEnd { index } if *index == 0));
+
+        let events = parse_event(
+            &event(r#"{"type":"message_delta","delta":{"stop_reason":"tool_use"}}"#),
+            &mut state,
+        )
+        .unwrap();
+        assert!(events.is_empty());
+
+        let events = parse_event(&event(r#"{"type":"message_stop"}"#), &mut state).unwrap();
+        let end_idx = events.iter().position(|e| matches!(e, LlmStreamEvent::ToolCallEnd { index } if *index == 1));
+        assert!(end_idx.is_some(), "index 1 End must be emitted at message_stop");
+        let done = events.iter().find(|e| matches!(e, LlmStreamEvent::Done { .. }));
+        assert!(matches!(done, Some(LlmStreamEvent::Done { stop_reason }) if *stop_reason == StopReason::ToolCalls));
     }
 
     #[test]
-    fn parse_response_thinking() {
-        let provider = AnthropicProvider::new("https://api.anthropic.com", "k", "m", &Default::default()).unwrap();
-        let body = json!({
-            "content": [
-                {"type": "thinking", "thinking": "Let me think..."},
-                {"type": "text", "text": "Here is my answer."}
-            ],
-            "stop_reason": "end_turn"
-        });
-        let events = provider.parse_response(&body);
-        assert_eq!(events.len(), 3);
+    fn parse_stream_thinking_delta() {
+        let mut state = StreamState::default();
+        let events = parse_event(
+            &event(r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me think..."}}"#),
+            &mut state,
+        )
+        .unwrap();
         assert!(matches!(&events[0], LlmStreamEvent::ThinkingDelta(t) if t == "Let me think..."));
-        assert!(matches!(&events[1], LlmStreamEvent::TextDelta(t) if t == "Here is my answer."));
+    }
+
+    #[test]
+    fn parse_stream_error_event_maps_to_err() {
+        let mut state = StreamState::default();
+        let result = parse_event(
+            &event(r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#),
+            &mut state,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Overloaded"));
+    }
+
+    #[test]
+    fn parse_stream_ping_ignored() {
+        let mut state = StreamState::default();
+        let events = parse_event(&event(r#"{"type":"ping"}"#), &mut state).unwrap();
+        assert!(events.is_empty());
     }
 
     #[test]

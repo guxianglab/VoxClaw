@@ -162,6 +162,17 @@ impl LlmMessage {
             tool_call_id: None,
         }
     }
+    /// Assistant message carrying both preamble text and tool calls. OpenAI
+    /// accepts `content` alongside `tool_calls`; keeping the preamble lets the
+    /// model's narration reach the next request.
+    pub fn assistant_with_tool_calls(content: impl Into<String>, calls: Vec<LlmToolCall>) -> Self {
+        Self {
+            role: "assistant".into(),
+            content: Some(content.into()),
+            tool_calls: calls,
+            tool_call_id: None,
+        }
+    }
     pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
             role: "tool".into(),
