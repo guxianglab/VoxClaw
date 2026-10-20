@@ -31,7 +31,6 @@ const CLSID_MM_DEVICE_ENUMERATOR: GUID = GUID::from_values(
 pub struct LoopbackCapture {
     active: Arc<AtomicBool>,
     sample_rate: u32,
-    channels: u32,
 }
 
 impl LoopbackCapture {
@@ -77,16 +76,11 @@ impl LoopbackCapture {
         Ok(Self {
             active,
             sample_rate,
-            channels,
         })
     }
 
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
-    }
-
-    pub fn channels(&self) -> u32 {
-        self.channels
     }
 
     pub fn stop(&self) {
@@ -190,7 +184,7 @@ fn loopback_capture_thread(
                 }
 
                 // Convert to f32 mono.
-                let samples = unsafe {
+                let samples = {
                     let byte_len = (num_frames as usize) * frame_size;
                     let bytes = std::slice::from_raw_parts(data_ptr, byte_len);
 

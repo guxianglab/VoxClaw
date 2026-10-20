@@ -28,9 +28,6 @@ pub enum AgentError {
     #[error("Unknown tool: {0}")]
     #[allow(dead_code)]
     UnknownTool(String),
-
-    #[error("Invalid tool arguments: {0}")]
-    InvalidToolArguments(String),
 }
 
 #[cfg(test)]

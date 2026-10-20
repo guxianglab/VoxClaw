@@ -10,9 +10,6 @@
 
 use std::path::{Path, PathBuf};
 
-/// The three required .onnx file categories in a Zipformer model directory.
-pub const REQUIRED_SUFFIXES: &[&str] = &["encoder", "decoder", "joiner"];
-
 /// The tokens filename is always `tokens.txt`.
 pub const TOKENS_FILE: &str = "tokens.txt";
 
