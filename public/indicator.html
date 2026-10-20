@@ -353,77 +353,6 @@
       align-items: flex-start;
     }
 
-    /* ── Inline confirmation ── */
-    .feed-entry.confirm-entry {
-      flex-direction: column;
-      gap: 8px;
-      padding: 10px 12px;
-      margin: 6px 0;
-      background: var(--bg-soft);
-      border: 1px solid var(--border);
-      border-left: 2px solid var(--accent);
-    }
-
-    .confirm-entry .confirm-row {
-      display: flex;
-      align-items: flex-start;
-      gap: 10px;
-    }
-
-    .confirm-entry .feed-icon {
-      color: var(--accent);
-    }
-
-    .confirm-entry .feed-text {
-      color: var(--text);
-      font-weight: 500;
-      font-size: 12px;
-      white-space: normal;
-    }
-
-    .confirm-entry .confirm-actions {
-      display: flex;
-      gap: 6px;
-      padding-left: 24px;
-    }
-
-    .feed-btn {
-      border: 1px solid var(--border);
-      background: var(--bg-strong);
-      padding: 4px 12px;
-      font-size: 12px;
-      font-family: inherit;
-      color: var(--text-2);
-      cursor: pointer;
-      transition: background var(--dur) ease, color var(--dur) ease, border-color var(--dur) ease;
-    }
-    .feed-btn:hover { background: var(--bg-hover); color: var(--text); }
-    .feed-btn:active { background: var(--bg-muted); }
-
-    .feed-btn.allow {
-      background: var(--accent);
-      color: #fff;
-      border-color: var(--accent);
-    }
-    .feed-btn.allow:hover { opacity: 0.85; background: var(--accent); color: #fff; }
-
-    .feed-btn.always {
-      background: transparent;
-      color: var(--accent);
-      border-color: var(--accent-line);
-    }
-    .feed-btn.always:hover { background: var(--accent-soft); color: var(--accent); }
-
-    .feed-btn.deny:hover { color: var(--error); border-color: rgba(220, 38, 38, 0.3); }
-
-    .confirm-entry.resolved-allow { border-left-color: var(--success); background: rgba(5, 150, 105, 0.04); }
-    .confirm-entry.resolved-allow .feed-icon { color: var(--success); }
-    .confirm-entry.resolved-allow .feed-text { color: var(--success); }
-
-    .confirm-entry.resolved-deny  { border-left-color: var(--error); background: rgba(220, 38, 38, 0.04); }
-    .confirm-entry.resolved-deny  .feed-icon { color: var(--error); }
-    .confirm-entry.resolved-deny  .feed-text { color: var(--error); }
-
     /* ───── Separator ───── */
     .separator {
       height: 1px;
@@ -603,7 +532,6 @@
 
     .indicator-panel.intent-raw .dot,
     .indicator-panel.intent-polish .dot,
-    .indicator-panel.intent-skill .dot,
     .indicator-panel.intent-agent .dot {
       background: var(--accent);
     }
@@ -853,7 +781,6 @@
     let targetLevel        = 0;
     let smoothedLevel      = 0;
 
-    const pendingConfirms = new Map();
 
     let tauriEvent  = null;
     let tauriWindow = null;
@@ -862,7 +789,6 @@
     const INTENT_LABEL = {
       raw:    '听写',
       polish: 'AI 润色',
-      skill:  '技能',
       agent:  'AI 助手'
     };
 
@@ -974,7 +900,7 @@
     function resetState() {
       panel.classList.remove(
         'visible', 'fade-out',
-        'intent-raw', 'intent-polish', 'intent-skill', 'intent-agent',
+        'intent-raw', 'intent-polish', 'intent-agent',
         'agent-active', 'result-display', 'dictation-hidden'
       );
       infoFeed.classList.remove('expanded');
@@ -994,7 +920,6 @@
       isFadingOut = false;
       dictationIntent = 'none';
       targetLevel = smoothedLevel = 0;
-      pendingConfirms.clear();
       setHeaderLabel('AI');
     }
 
@@ -1002,7 +927,7 @@
     // Intent / theme
     // ─────────────────────────────────────────────
     function applyIntent(intent) {
-      panel.classList.remove('intent-raw', 'intent-polish', 'intent-skill', 'intent-agent');
+      panel.classList.remove('intent-raw', 'intent-polish', 'intent-agent');
       if (intent && intent !== 'none') {
         panel.classList.add('intent-' + intent);
       }
@@ -1196,101 +1121,6 @@
     }
 
     // ─────────────────────────────────────────────
-    // Confirmation
-    // ─────────────────────────────────────────────
-    function handleConfirmationRequest(data) {
-      if (!data || !data.id) return;
-      console.log('[Indicator] Confirmation request:', data.tool, data.summary);
-
-      const div = document.createElement('div');
-      div.className = 'feed-entry confirm-entry';
-
-      const row = document.createElement('div');
-      row.className = 'confirm-row';
-
-      const icon = document.createElement('span');
-      icon.className = 'feed-icon';
-      icon.textContent = '!';
-
-      const text = document.createElement('span');
-      text.className = 'feed-text';
-      text.textContent = '需要确认 · ' + (data.tool || '') + (data.summary ? '  ' + truncate(data.summary, 80) : '');
-
-      row.appendChild(icon);
-      row.appendChild(text);
-
-      const actions = document.createElement('div');
-      actions.className = 'confirm-actions';
-
-      const denyBtn   = makeConfirmBtn('拒绝',     'deny',   data.id, 'deny');
-      const alwaysBtn = makeConfirmBtn('始终允许', 'always', data.id, 'always');
-      const allowBtn  = makeConfirmBtn('允许',     'allow',  data.id, 'allow');
-
-      actions.appendChild(denyBtn);
-      actions.appendChild(alwaysBtn);
-      actions.appendChild(allowBtn);
-
-      div.appendChild(row);
-      div.appendChild(actions);
-      infoFeedScroll.appendChild(div);
-      scrollFeedToBottom();
-      expandFeed();
-
-      const timeoutMs = data.timeout_ms || 30000;
-      const timerId = setTimeout(() => {
-        console.log('[Indicator] Confirmation timeout, auto-denying', data.id);
-        resolveConfirm(data.id, 'deny');
-      }, timeoutMs);
-
-      pendingConfirms.set(data.id, { el: div, timerId });
-    }
-
-    function makeConfirmBtn(label, cls, confirmId, decision) {
-      const btn = document.createElement('button');
-      btn.className = 'feed-btn ' + cls;
-      btn.textContent = label;
-      btn.onclick = () => resolveConfirm(confirmId, decision);
-      return btn;
-    }
-
-    function resolveConfirm(id, decision) {
-      const entry = pendingConfirms.get(id);
-      if (!entry) return;
-      clearTimeout(entry.timerId);
-      pendingConfirms.delete(id);
-
-      if (entry.el) {
-        const actions = entry.el.querySelector('.confirm-actions');
-        if (actions) actions.remove();
-
-        const isAllow = (decision !== 'deny');
-        entry.el.classList.add(isAllow ? 'resolved-allow' : 'resolved-deny');
-
-        const icon = entry.el.querySelector('.feed-icon');
-        if (icon) icon.textContent = isAllow ? '✓' : '✗';
-      }
-
-      if (!window.__TAURI__) return;
-      const core = window.__TAURI__.core;
-
-      if (decision === 'always') {
-        const tool = entry.el
-          ? (entry.el.querySelector('.feed-text') || {}).textContent || ''
-          : '';
-        // text format: "需要确认 · {tool}  {summary}"
-        const m = tool.match(/·\s*([^\s]+)/);
-        const toolName = (m && m[1]) ? m[1] : '*';
-        const rule = { tool: toolName, action: 'allow', commandPattern: null, pathScope: null };
-        core.invoke('add_safety_rule', { rule }).catch(e =>
-          console.error('[Indicator] add_safety_rule failed:', e)
-        );
-        core.invoke('respond_confirmation', { id, decision: 'allow' }).catch(console.error);
-      } else {
-        core.invoke('respond_confirmation', { id, decision }).catch(console.error);
-      }
-    }
-
-    // ─────────────────────────────────────────────
     // Audio bar animation loop
     // ─────────────────────────────────────────────
     function isThinking() {
@@ -1440,11 +1270,6 @@
         }
         if (!isAgentProcessing) return;
         handleAgentEvent(data);
-      });
-
-      event.listen('confirmation_request', (e) => {
-        handleConfirmationRequest(e.payload);
-        showPanel();
       });
 
       console.log('[Indicator] All event listeners registered');

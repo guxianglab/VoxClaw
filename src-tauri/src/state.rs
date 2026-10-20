@@ -1,5 +1,4 @@
 use serde::Serialize;
-use std::collections::HashSet;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
@@ -20,7 +19,6 @@ pub type InputListenerState = input_listener::InputListener;
 pub type ProcessingState = Arc<std::sync::atomic::AtomicBool>;
 pub type LlmCancelState = Arc<Mutex<Option<CancellationToken>>>;
 pub type AgentCancelState = Arc<Mutex<Option<CancellationToken>>>;
-pub type SkillExecutionState = Arc<Mutex<Option<SkillExecutionSession>>>;
 pub type MeetingState = Arc<Mutex<Option<crate::meeting::session::ActiveMeeting>>>;
 
 // ---------------------------------------------------------------------------
@@ -29,7 +27,6 @@ pub type MeetingState = Arc<Mutex<Option<crate::meeting::session::ActiveMeeting>
 
 pub static TRANSCRIPTION_SEQ: AtomicU64 = AtomicU64::new(1);
 pub static DICTATION_SESSION_SEQ: AtomicU64 = AtomicU64::new(1);
-pub static SKILL_SESSION_SEQ: AtomicU64 = AtomicU64::new(1);
 
 // ---------------------------------------------------------------------------
 // Dictation state machine
@@ -39,7 +36,6 @@ pub static SKILL_SESSION_SEQ: AtomicU64 = AtomicU64::new(1);
 pub enum DictationIntent {
     Raw,
     Polish,
-    Skill,
     Agent,
     None,
 }
@@ -49,7 +45,6 @@ impl DictationIntent {
         match self {
             Self::Raw => "raw",
             Self::Polish => "polish",
-            Self::Skill => "skill",
             Self::Agent => "agent",
             Self::None => "none",
         }
@@ -75,40 +70,12 @@ pub enum DictationState {
 }
 
 // ---------------------------------------------------------------------------
-// Skill execution session
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Default)]
-pub struct SkillExecutionSession {
-    pub id: u64,
-    pub executed: HashSet<String>,
-    pub pending: HashSet<String>,
-    pub consumed_prefix: String,
-    pub last_streaming_browser_open_action: Option<String>,
-}
-
-// ---------------------------------------------------------------------------
-// Voice command feedback
+// Command payloads
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
 pub struct AsrStatus {
     pub configured: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct VoiceCommandFeedback {
-    pub level: String,
-    pub message: String,
-}
-
-#[derive(Clone, Debug)]
-pub enum ConfigSkillPlan {
-    Save {
-        config: Box<storage::AppConfig>,
-        feedback: VoiceCommandFeedback,
-    },
-    Feedback(VoiceCommandFeedback),
 }
 
 // ---------------------------------------------------------------------------

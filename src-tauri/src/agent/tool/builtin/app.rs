@@ -71,7 +71,7 @@ impl Tool for OpenBrowserTool {
             cmd.args(["/C", "start"]);
         } else {
             // Validate and quote so the URL can never be parsed as commands.
-            let normalized = crate::skills::normalize_browser_url(url)
+            let normalized = super::open_url::normalize_browser_url(url)
                 .map_err(|e| AgentError::Tool(format!("Invalid URL: {}", e)))?;
             cmd.args(["/C", "start", "", &format!("\"{}\"", normalized)]);
         }

@@ -34,8 +34,8 @@ const ALT_DUMMY_CTRL_DELAY_MS: u64 = 60;
 #[derive(Debug, Clone)]
 pub enum InputEvent {
     Click,
-    StartSkill,
-    StopSkill,
+    StartAgent,
+    StopAgent,
     DictationFinalizeWindowElapsed {
         session_id: u64,
     },
@@ -273,7 +273,7 @@ unsafe fn handle_raw_input(state: &ListenerState, lparam: LPARAM) {
 #[derive(Clone)]
 struct HoldTrigger {
     pressed: Arc<AtomicBool>,
-    skill_active: Arc<AtomicBool>,
+    agent_active: Arc<AtomicBool>,
     generation: Arc<AtomicU64>,
     /// Set when any real (non-injected) key arrives while the trigger key is
     /// held. For the right-Alt trigger this means AltGr typing: the release
@@ -288,7 +288,7 @@ impl HoldTrigger {
     fn new(inject_dummy_ctrl: bool) -> Self {
         Self {
             pressed: Arc::new(AtomicBool::new(false)),
-            skill_active: Arc::new(AtomicBool::new(false)),
+            agent_active: Arc::new(AtomicBool::new(false)),
             generation: Arc::new(AtomicU64::new(0)),
             other_key_seen: Arc::new(AtomicBool::new(false)),
             inject_dummy_ctrl,
@@ -304,11 +304,11 @@ impl HoldTrigger {
             return; // already pressed (repeat event)
         }
 
-        self.skill_active.store(false, Ordering::Release);
+        self.agent_active.store(false, Ordering::Release);
         self.other_key_seen.store(false, Ordering::Release);
         let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
         let pressed = self.pressed.clone();
-        let skill_active = self.skill_active.clone();
+        let agent_active = self.agent_active.clone();
         let generation_state = self.generation.clone();
         let other_key_seen = self.other_key_seen.clone();
         let tx = tx.clone();
@@ -330,8 +330,8 @@ impl HoldTrigger {
                 return;
             }
 
-            if !skill_active.swap(true, Ordering::AcqRel) {
-                tx.send(InputEvent::StartSkill).ok();
+            if !agent_active.swap(true, Ordering::AcqRel) {
+                tx.send(InputEvent::StartAgent).ok();
             }
         });
 
@@ -356,8 +356,8 @@ impl HoldTrigger {
         // must not toggle dictation.
         let other_keys = self.other_key_seen.load(Ordering::Acquire);
 
-        if self.skill_active.swap(false, Ordering::AcqRel) {
-            tx.send(InputEvent::StopSkill).ok();
+        if self.agent_active.swap(false, Ordering::AcqRel) {
+            tx.send(InputEvent::StopAgent).ok();
         } else if !other_keys {
             tx.send(InputEvent::Click).ok();
         }

@@ -1,8 +1,7 @@
 pub mod builtin;
-pub mod hooks;
 
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use std::collections::HashMap;
@@ -10,7 +9,6 @@ use std::collections::HashMap;
 use crate::agent::core::event::ToolUpdateContent;
 use crate::agent::core::message::{ToolCall, ToolResult};
 use crate::agent::error::AgentError;
-use hooks::ToolHook;
 
 /// Context passed to tool execution.
 pub struct ToolContext {
@@ -35,42 +33,18 @@ pub trait Tool: Send + Sync {
     async fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolOutput, AgentError>;
 }
 
-/// Execution mode for multiple tool calls.
-#[derive(Debug, Clone, Default)]
-pub enum ExecutionMode {
-    Parallel,
-    #[default]
-    Sequential,
-}
-
-/// Executes tool calls through the hook chain.
+/// Executes tool calls sequentially.
 pub struct ToolExecutor {
     tools: HashMap<String, Box<dyn Tool>>,
-    hooks: Vec<Box<dyn ToolHook>>,
-    mode: ExecutionMode,
-}
-
-/// Result from running before-call hooks.
-enum HookResult {
-    Allowed { modified_args: Option<Value> },
-    Blocked { reason: String },
 }
 
 impl ToolExecutor {
     pub fn new() -> Self {
-        Self { tools: HashMap::new(), hooks: Vec::new(), mode: ExecutionMode::default() }
+        Self { tools: HashMap::new() }
     }
 
     pub fn register(&mut self, tool: Box<dyn Tool>) {
         self.tools.insert(tool.name().to_string(), tool);
-    }
-
-    pub fn add_hook(&mut self, hook: Box<dyn ToolHook>) {
-        self.hooks.push(hook);
-    }
-
-    pub fn set_mode(&mut self, mode: ExecutionMode) {
-        self.mode = mode;
     }
 
     pub fn tool_specs(&self) -> Vec<crate::agent::core::request::LlmTool> {
@@ -79,87 +53,53 @@ impl ToolExecutor {
         }).collect()
     }
 
-    /// Execute a list of tool calls through hooks, return results.
+    /// Execute a list of tool calls, return results.
     pub async fn execute_calls(&self, calls: Vec<ToolCall>) -> Vec<ToolResult> {
         let mut results = Vec::with_capacity(calls.len());
 
         for call in &calls {
-            let tool_ref = self.tools.get(&call.name);
-
-            // Run before hooks
-            let hook_result = if let Some(tool) = tool_ref {
-                self.run_before_hooks(call, tool.as_ref()).await
-            } else {
-                HookResult::Allowed { modified_args: None }
+            let error = |content: String| ToolResult {
+                call_id: call.id.clone(),
+                tool_name: call.name.clone(),
+                content,
+                is_error: true,
             };
 
-            match hook_result {
-                HookResult::Blocked { reason } => {
-                    results.push(ToolResult {
-                        call_id: call.id.clone(),
-                        tool_name: call.name.clone(),
-                        content: reason,
-                        is_error: true,
-                    });
+            let Some(tool) = self.tools.get(&call.name) else {
+                results.push(error(format!("Unknown tool: {}", call.name)));
+                continue;
+            };
+
+            // Reject invalid JSON arguments up front: the model receives the
+            // parse error as a tool result and can retry with fixed arguments,
+            // instead of silently executing with `{}`.
+            let args = match serde_json::from_str::<Value>(&call.arguments) {
+                Ok(args) => args,
+                Err(e) => {
+                    results.push(error(format!(
+                        "arguments are not valid JSON ({e}); fix the arguments and call again"
+                    )));
                     continue;
                 }
-                HookResult::Allowed { modified_args } => {
-                    let args = modified_args.unwrap_or_else(|| {
-                        serde_json::from_str(&call.arguments).unwrap_or(json!({}))
-                    });
+            };
 
-                    let result = if let Some(tool) = tool_ref {
-                        let (update_tx, _update_rx) = mpsc::channel::<ToolUpdateContent>(8);
-                        let ctx = ToolContext {
-                            _call_id: call.id.clone(),
-                            _abort: CancellationToken::new(),
-                            _on_update: update_tx,
-                        };
-                        match tool.execute(args, &ctx).await {
-                            Ok(ToolOutput::Text(text)) => ToolResult { call_id: call.id.clone(), tool_name: call.name.clone(), content: text, is_error: false },
-                            Ok(ToolOutput::Error(msg)) => ToolResult { call_id: call.id.clone(), tool_name: call.name.clone(), content: msg, is_error: true },
-                            Err(e) => ToolResult { call_id: call.id.clone(), tool_name: call.name.clone(), content: e.to_string(), is_error: true },
-                        }
-                    } else {
-                        ToolResult { call_id: call.id.clone(), tool_name: call.name.clone(), content: format!("Unknown tool: {}", call.name), is_error: true }
-                    };
-
-                    let mut final_result = result;
-                    self.run_after_hooks(call, &mut final_result).await;
-                    results.push(final_result);
-                }
-            }
+            println!("[TOOL] {} args={}", call.name, call.arguments);
+            let (update_tx, _update_rx) = mpsc::channel::<ToolUpdateContent>(8);
+            let ctx = ToolContext {
+                _call_id: call.id.clone(),
+                _abort: CancellationToken::new(),
+                _on_update: update_tx,
+            };
+            let result = match tool.execute(args, &ctx).await {
+                Ok(ToolOutput::Text(text)) => ToolResult { call_id: call.id.clone(), tool_name: call.name.clone(), content: text, is_error: false },
+                Ok(ToolOutput::Error(msg)) => error(msg),
+                Err(e) => error(e.to_string()),
+            };
+            results.push(result);
         }
 
         results
     }
-
-    async fn run_before_hooks(&self, call: &ToolCall, tool: &dyn Tool) -> HookResult {
-        for hook in &self.hooks {
-            match hook.before_call(call, tool).await {
-                HookDecision::Allow => continue,
-                HookDecision::Block { reason } => return HookResult::Blocked { reason },
-                HookDecision::ModifyArgs { args } => return HookResult::Allowed { modified_args: Some(args) },
-            }
-        }
-        HookResult::Allowed { modified_args: None }
-    }
-
-    async fn run_after_hooks(&self, call: &ToolCall, result: &mut ToolResult) {
-        for hook in &self.hooks {
-            let _ = hook.after_call(call, result).await;
-        }
-    }
-}
-
-/// Decision from a before-call hook.
-#[derive(Debug, Clone)]
-pub enum HookDecision {
-    Allow,
-    #[allow(dead_code)]
-    Block { reason: String },
-    #[allow(dead_code)]
-    ModifyArgs { args: Value },
 }
 
 /// Create all built-in tools.
@@ -203,5 +143,21 @@ mod tests {
         let results = executor.execute_calls(vec![call]).await;
         assert_eq!(results.len(), 1);
         assert!(results[0].is_error);
+    }
+
+    #[tokio::test]
+    async fn executor_rejects_invalid_json_arguments() {
+        let mut executor = ToolExecutor::new();
+        executor.register(Box::new(EchoTool));
+        let call = ToolCall {
+            id: "call_bad".into(),
+            name: "echo".into(),
+            // Malformed: unquoted key — must not fall back to `{}` and run anyway.
+            arguments: r#"{text: "hi"}"#.into(),
+        };
+        let results = executor.execute_calls(vec![call]).await;
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_error);
+        assert!(results[0].content.contains("not valid JSON"));
     }
 }

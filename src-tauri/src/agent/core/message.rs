@@ -66,7 +66,7 @@ impl AgentMessage {
     }
     pub fn user(text: impl Into<String>) -> Self {
         AgentMessage::User {
-            content: UserContent::Text(text.into()),
+            content: UserContent::Text { text: text.into() },
             attachments: vec![],
         }
     }
@@ -92,7 +92,7 @@ impl AgentMessage {
     pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
         AgentMessage::ToolResult {
             tool_call_id: tool_call_id.into(),
-            content: ToolResultContent::Text(content.into()),
+            content: ToolResultContent::Text { text: content.into() },
             is_error: false,
         }
     }
@@ -106,7 +106,7 @@ impl AgentMessage {
     ) -> Self {
         AgentMessage::ToolResult {
             tool_call_id: tool_call_id.into(),
-            content: ToolResultContent::Text(content.into()),
+            content: ToolResultContent::Text { text: content.into() },
             is_error,
         }
     }
@@ -115,7 +115,10 @@ impl AgentMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum UserContent {
-    Text(String),
+    // NOTE: struct variant, not `Text(String)` — serde cannot serialize an
+    // internally-tagged newtype variant holding a bare string, and the old
+    // shape silently dropped every user message from the session log.
+    Text { text: String },
     /// Inline image attached as part of the user message.
     /// Reserved for future multimodal input; no provider currently consumes it.
     #[allow(dead_code)]
@@ -125,7 +128,8 @@ pub enum UserContent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ToolResultContent {
-    Text(String),
+    // Same internally-tagged-newtype constraint as `UserContent::Text`.
+    Text { text: String },
     /// Image returned by a tool (e.g. screenshot). Surfaced in the UI; not
     /// yet sent back to the LLM (Phase 6 will wire vision-capable providers).
     #[allow(dead_code)]
@@ -154,7 +158,7 @@ pub struct ToolCall {
 pub fn default_system_prompt() -> &'static str {
     "You are VoxClaw Agent, a voice-driven AI assistant. The user speaks to you via voice input.\n\
      - If the user wants to dictate text, return it directly without using tools.\n\
-     - If the user wants to perform an action (open app, run command, etc.), use the appropriate tool.\n\
+     - If the user wants to perform an action (open an app or website, take a screenshot, etc.), use the appropriate tool.\n\
      - Be concise — voice interactions should be quick.\n\
      - Respond in the same language the user speaks.\n\
      - When you perform an action, briefly confirm what you did."
