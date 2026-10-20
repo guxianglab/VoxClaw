@@ -1,20 +1,25 @@
-name: Release Windows Installer
+name: Windows Installer
 
 on:
   push:
+    branches:
+      - main
+      - master
     tags:
       - "v*"
+  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-windows-${{ github.ref }}
-  cancel-in-progress: false
+  group: windows-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
-  release:
-    name: Build And Publish NSIS Installer
+  build:
+    name: Build NSIS Installer
     runs-on: windows-latest
 
     steps:
@@ -42,25 +47,29 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Sync version from tag
+        if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         run: |
-          $tag = "${{ github.ref_name }}"
-          $version = $tag.TrimStart('v')
+          $version = "${{ github.ref_name }}".TrimStart('v')
           $packageJson = Get-Content -Path package.json | ConvertFrom-Json
           $packageJson.version = $version
           $packageJson | ConvertTo-Json -Depth 100 | Set-Content -Path package.json
-          Write-Host "Updated package.json version to $version for build"
 
       - name: Build Windows NSIS installer
         run: pnpm tauri build
 
-      - name: List build artifacts
-        run: Get-ChildItem -Path "src-tauri/target/release/bundle/nsis" -Recurse | Select-Object FullName
+      - name: Upload installer artifact
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: voxclaw-windows-nsis-${{ github.sha }}
+          path: src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           name: VoxClaw ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
