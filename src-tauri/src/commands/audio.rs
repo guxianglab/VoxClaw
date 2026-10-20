@@ -7,38 +7,12 @@ use crate::audio;
 use crate::state::{AudioState, StorageState};
 use crate::storage::AsrProviderKind;
 
-#[tauri::command]
-pub fn get_asr_status(state: tauri::State<StorageState>) -> crate::state::AsrStatus {
-    let config = state.load_config();
-    let configured = match config.asr.provider {
-        AsrProviderKind::Volcengine => {
-            !config.asr.volcengine.app_key.is_empty()
-                && !config.asr.volcengine.access_key.is_empty()
-        }
-        AsrProviderKind::ZipformerStreaming => zipformer::model::is_present(Path::new(
-            &config.asr.zipformer.model_dir,
-        )),
-    };
-    crate::state::AsrStatus { configured }
-}
-
 fn zipformer_default_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     let base = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("locate app_data_dir failed: {e}"))?;
     Ok(base.join("models").join(zipformer::download::ARCHIVE_DIR_NAME))
-}
-
-/// Default model directory for Zipformer (`<app_data>/models/<archive>`).
-#[tauri::command]
-pub fn get_zipformer_default_dir<R: Runtime>(app: AppHandle<R>) -> Result<String, String> {
-    Ok(zipformer_default_dir(&app)?.display().to_string())
-}
-
-#[tauri::command]
-pub fn check_zipformer_model_present(model_dir: String) -> bool {
-    !model_dir.is_empty() && zipformer::model::is_present(Path::new(&model_dir))
 }
 
 /// Download and extract the streaming Zipformer model into the default

@@ -67,9 +67,7 @@ fn zipformer_model_ready(config: &ZipformerStreamingConfig) -> bool {
 }
 
 /// Short notice for the "engine selected but model not downloaded" case.
-fn model_missing_notice(engine: &str) -> String {
-    format!("{engine} 模型未下载，设置已保存。请在下方点击“下载模型”，下载完成后即可使用该引擎。")
-}
+const MODEL_MISSING_NOTICE: &str = "本地识别还需要下载模型：点击下方“下载模型”，完成后即可使用。";
 
 pub fn build_provider(
     config: &AsrConfig,
@@ -82,14 +80,12 @@ pub fn build_provider(
         ))),
         AsrProviderKind::ZipformerStreaming => {
             if !zipformer_model_ready(&config.zipformer) {
-                return Err(ProviderBuildError::ModelMissing(model_missing_notice(
-                    "Zipformer",
-                )));
+                return Err(ProviderBuildError::ModelMissing(MODEL_MISSING_NOTICE.to_string()));
             }
             let provider = zipformer::ZipformerProvider::try_new(&config.zipformer).map_err(
                 |err| {
                     ProviderBuildError::Other(anyhow!(
-                        "Zipformer 流式引擎加载失败: {err}。请检查模型文件是否存在。"
+                        "本地识别模型加载失败（{err}），请在设置中重新下载模型。"
                     )
                     .to_string())
                 },

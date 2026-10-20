@@ -1,10 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-export interface AsrStatus {
-    configured: boolean;
-}
-
 export interface AudioDevice {
     id: string;
     name: string;
@@ -79,8 +75,6 @@ export interface HistoryItem {
     duration_ms: number;
 }
 
-export type DictationIntent = "raw" | "polish" | "agent" | "none";
-
 // ---------------------------------------------------------------------------
 // Meeting mode
 // ---------------------------------------------------------------------------
@@ -142,10 +136,6 @@ export const api = {
     getHistory: () => invoke<HistoryItem[]>("get_history"),
     clearHistory: () => invoke("clear_history"),
     deleteHistoryItem: (id: string) => invoke("delete_history_item", { id }),
-    getAsrStatus: () => invoke<AsrStatus>("get_asr_status"),
-    checkZipformerModelPresent: (modelDir: string) =>
-        invoke<boolean>("check_zipformer_model_present", { modelDir }),
-    getZipformerDefaultDir: () => invoke<string>("get_zipformer_default_dir"),
     downloadZipformerModel: () => invoke<string>("download_zipformer_model"),
     getInputDevices: () => invoke<AudioDevice[]>("get_input_devices"),
     getCurrentInputDevice: () => invoke<string>("get_current_input_device"),
@@ -162,48 +152,13 @@ export const api = {
     getMeeting: (id: string) => invoke<MeetingRecord | null>("get_meeting", { id }),
     deleteMeeting: (id: string) => invoke("delete_meeting", { id }),
     summarizeMeeting: (id: string) => invoke<MeetingRecord>("summarize_meeting", { id }),
-    cancelAgent: () => invoke("cancel_agent"),
-    sessionList: () => invoke<SessionSummary[]>("session_list"),
-    sessionLoad: (sessionId: string) => invoke<AgentMessageWire[]>("session_load", { sessionId }),
     sessionNew: () => invoke<string>("session_new"),
-    sessionClearCurrent: () => invoke("session_clear_current"),
-    sessionCurrent: () => invoke<string | null>("session_current"),
 };
-
-export interface SessionSummary {
-    session_id: string;
-    created_at: string;
-    entry_count: number;
-    last_user_text: string | null;
-    last_assistant_text: string | null;
-}
-
-/// Wire format for AgentMessage. Discriminated by `role`. The exact shape of
-/// `content` is provider-internal; consumers should narrow by role first.
-export type AgentMessageWire =
-    | { role: "system"; content: string }
-    | { role: "user"; content: unknown; attachments: unknown[] }
-    | {
-          role: "assistant";
-          content: string | null;
-          tool_calls: { id: string; name: string; arguments: string }[];
-          thinking: string | null;
-          usage: unknown;
-          stop_reason: string | null;
-      }
-    | { role: "tool_result"; tool_call_id: string; content: unknown; is_error: boolean };
 
 export const events = {
     onTranscriptionUpdate: (callback: (payload: HistoryItem) => void) => listen<HistoryItem>("transcription_update", (e) => callback(e.payload)),
-    onRecordingStatus: (callback: (isRecording: boolean) => void) => listen<boolean>("recording_status", (e) => callback(e.payload)),
-    onRecognitionProcessing: (callback: (isProcessing: boolean) => void) => listen<boolean>("recognition_processing", (e) => callback(e.payload)),
     onAudioLevel: (callback: (level: number) => void) => listen<number>("audio_level", (e) => callback(e.payload)),
-    onLlmProcessing: (callback: (isProcessing: boolean) => void) => listen<boolean>("llm_processing", (e) => callback(e.payload)),
     onLlmError: (callback: (message: string) => void) => listen<string>("llm_error", (e) => callback(e.payload)),
-    onMousePosition: (callback: (pos: { x: number; y: number }) => void) => listen<{ x: number; y: number }>("mouse_position", (e) => callback(e.payload)),
-    onStreamUpdate: (callback: (text: string) => void) => listen<string>("stream_update", (e) => callback(e.payload)),
-    onDictationIntent: (callback: (intent: DictationIntent) => void) =>
-        listen<DictationIntent>("dictation_intent", (e) => callback(e.payload)),
     onAsrModelDownload: (callback: (payload: AsrModelDownloadEvent) => void) =>
         listen<AsrModelDownloadEvent>("asr_model_download", (e) => callback(e.payload)),
     onMeetingStatus: (callback: (payload: MeetingStatusEvent) => void) =>

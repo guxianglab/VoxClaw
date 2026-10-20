@@ -1,67 +1,30 @@
-import { useEffect, useState } from "react";
-import { MessageSquarePlus, RotateCw } from "lucide-react";
+import { useState } from "react";
+import { MessageSquarePlus } from "lucide-react";
 import { api } from "../lib/api";
 
 /**
- * Compact bar shown when continuous-session mode is enabled.
- * Surfaces the current session id and lets the user start a fresh one.
+ * Shown when continuous conversation is on: the assistant remembers earlier
+ * commands until the user starts over.
  */
 export function SessionBar() {
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [justReset, setJustReset] = useState(false);
 
-  const refresh = async () => {
-    try {
-      const id = await api.sessionCurrent();
-      setSessionId(id);
-    } catch {
-      setSessionId(null);
-    }
+  const startOver = async () => {
+    await api.sessionNew();
+    setJustReset(true);
+    window.setTimeout(() => setJustReset(false), 2000);
   };
-
-  useEffect(() => {
-    refresh();
-    const t = window.setInterval(refresh, 4000);
-    return () => window.clearInterval(t);
-  }, []);
-
-  const handleNew = async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const id = await api.sessionNew();
-      setSessionId(id);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const shortId = sessionId ? sessionId.slice(0, 8) : "未开启";
 
   return (
-    <div className="flex items-center justify-between border-b border-neutral-200 py-2">
-      <div className="flex items-center gap-2 text-xs">
-        <span className="uppercase tracking-wider text-neutral-400">当前会话</span>
-        <span className="font-mono text-neutral-700">{shortId}</span>
-      </div>
-      <div className="flex items-center gap-1">
-        <button
-          onClick={refresh}
-          disabled={busy}
-          className="flex items-center gap-1 px-2 py-1 text-xs text-neutral-500 transition-colors hover:bg-neutral-200"
-          title="刷新"
-        >
-          <RotateCw className="h-3 w-3" />
-        </button>
-        <button
-          onClick={handleNew}
-          disabled={busy}
-          className="flex items-center gap-1 px-2 py-1 text-xs text-neutral-500 transition-colors hover:bg-neutral-200"
-        >
-          <MessageSquarePlus className="h-3 w-3" />
-          新建会话
-        </button>
-      </div>
+    <div className="flex items-center justify-between py-1 text-xs text-neutral-400">
+      <span>连续对话已开启，AI 助手会记住之前的指令</span>
+      <button
+        onClick={startOver}
+        className="inline-flex items-center gap-1 px-2 py-1 text-neutral-500 transition-colors hover:bg-neutral-200 hover:text-neutral-900"
+      >
+        <MessageSquarePlus className="h-3.5 w-3.5" />
+        {justReset ? "已开始新对话" : "开始新对话"}
+      </button>
     </div>
   );
 }

@@ -1,52 +1,39 @@
-import { type ReactNode, useState, useEffect } from "react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { AlertCircle, Wrench, X } from "lucide-react";
 import { HistoryList } from "./components/HistoryList";
 import { MeetingView } from "./components/MeetingView";
 import { SessionBar } from "./components/SessionBar";
-import { SettingsModal } from "./components/SettingsModal";
+import { SettingsModal, type SettingsTab } from "./components/SettingsModal";
+import { SetupWizard } from "./components/SetupWizard";
 import { StatusSection } from "./components/StatusSection";
 import { TitleBar } from "./components/TitleBar";
-import { api, events } from "./lib/api";
+import { isSpeechReady } from "./components/settings/useConfigDraft";
+import { api, AppConfig, events } from "./lib/api";
 import "./index.css";
 
 type ViewTab = "dictation" | "meeting";
 
 function App() {
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [asrConfigured, setAsrConfigured] = useState(false);
-  const [needsSetup, setNeedsSetup] = useState(false);
+  const [config, setConfig] = useState<AppConfig | null>(null);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
+  const [showWizard, setShowWizard] = useState(false);
   const [llmError, setLlmError] = useState<string | null>(null);
   const [runtimeNotice, setRuntimeNotice] = useState<string | null>(null);
   const [view, setView] = useState<ViewTab>("dictation");
-  const [continuousMode, setContinuousMode] = useState(false);
+
+  const reloadConfig = useCallback(() => api.getConfig().then(setConfig), []);
 
   useEffect(() => {
-    api.getAsrStatus().then(status => {
-      setAsrConfigured(status.configured);
+    api.getConfig().then((loaded) => {
+      setConfig(loaded);
+      // Speech recognition is the only hard requirement; AI is optional.
+      if (!isSpeechReady(loaded)) setShowWizard(true);
     });
+    api.takeRuntimeNotice().then((notice) => notice && setRuntimeNotice(notice));
 
-    api.takeRuntimeNotice().then((notice) => {
-      if (notice) {
-        setRuntimeNotice(notice);
-      }
-    });
-
-    Promise.all([api.getConfig(), api.getAsrStatus()]).then(([config, asrStatus]) => {
-      const noDevice = !config.input_device || config.input_device === "";
-      const noAsr = !asrStatus.configured;
-      setContinuousMode(config.agent_config?.continuous_mode ?? false);
-      // LLM 配置是可选的（纯听写不需要），不要强制用户填写。
-      if (noDevice || noAsr) {
-        setNeedsSetup(true);
-        setIsSettingsOpen(true);
-      }
-    });
-
-    const unsubLlmError = events.onLlmError((message) => {
-      setLlmError(message);
-    });
+    const unsubLlmError = events.onLlmError(setLlmError);
     return () => {
-      unsubLlmError.then(f => f());
+      unsubLlmError.then((f) => f());
     };
   }, []);
 
@@ -60,27 +47,16 @@ function App() {
     return () => window.clearTimeout(timeout);
   }, [llmError]);
 
-  const handleSettingsClose = (skip = false) => {
-    Promise.all([api.getConfig(), api.getAsrStatus()]).then(([config, asrStatus]) => {
-      const hasDevice = config.input_device && config.input_device !== "";
-      const hasAsr = asrStatus.configured;
-      setAsrConfigured(hasAsr);
-      setContinuousMode(config.agent_config?.continuous_mode ?? false);
-      if ((hasDevice && hasAsr) || skip) {
-        setNeedsSetup(false);
-        setIsSettingsOpen(false);
-      }
-    });
-  };
-
   return (
     <div className="flex h-screen w-full overflow-hidden bg-neutral-100 text-neutral-900 selection:bg-chinese-indigo/15">
       <TitleBar />
       <div className="mx-auto flex h-full w-full max-w-6xl flex-1 flex-col px-4 pb-4 pt-8 md:px-6 md:pt-10">
         <div className="flex flex-col gap-3 pb-4">
           <StatusSection
-            asrConfigured={asrConfigured}
-            onSettingsClick={() => setIsSettingsOpen(true)}
+            config={config}
+            speechReady={!!config && isSpeechReady(config)}
+            onSetup={() => setShowWizard(true)}
+            onSettingsClick={() => setSettingsTab("general")}
           />
 
           <div className="flex items-center gap-1 border-b border-neutral-200">
@@ -92,7 +68,7 @@ function App() {
             </TabButton>
           </div>
 
-          {view === "dictation" && continuousMode && <SessionBar />}
+          {view === "dictation" && config?.agent_config.continuous_mode && <SessionBar />}
 
           {(runtimeNotice || llmError) && (
             <div className="flex flex-col gap-2">
@@ -109,7 +85,7 @@ function App() {
                 <NoticeBar
                   tone="red"
                   icon={<AlertCircle className="h-4 w-4" />}
-                  title="润色异常"
+                  title="润色失败，已输入原文"
                   message={llmError}
                   onClose={() => setLlmError(null)}
                 />
@@ -123,7 +99,22 @@ function App() {
         </div>
       </div>
 
-      <SettingsModal isOpen={isSettingsOpen} onClose={handleSettingsClose} isFirstSetup={needsSetup} />
+      <SettingsModal
+        isOpen={settingsTab !== null}
+        initialTab={settingsTab ?? "general"}
+        onClose={() => {
+          setSettingsTab(null);
+          reloadConfig();
+        }}
+      />
+      {showWizard && (
+        <SetupWizard
+          onDone={() => {
+            setShowWizard(false);
+            reloadConfig();
+          }}
+        />
+      )}
     </div>
   );
 }

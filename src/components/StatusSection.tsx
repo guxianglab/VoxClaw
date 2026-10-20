@@ -1,38 +1,46 @@
 import { Settings2 } from "lucide-react";
+import type { AppConfig } from "../lib/api";
+import { Key, PrimaryButton } from "./ui";
 
 interface StatusSectionProps {
-  asrConfigured: boolean;
+  config: AppConfig | null;
+  speechReady: boolean;
+  onSetup: () => void;
   onSettingsClick: () => void;
 }
 
-export function StatusSection({ asrConfigured, onSettingsClick }: StatusSectionProps) {
-  const statusText = asrConfigured ? "待机中" : "需要完成设置";
-  const helperText = asrConfigured
-    ? "单击开始，双击触发润色，长按唤起 AI 助手"
-    : "先配置麦克风和识别服务";
+export function StatusSection({ config, speechReady, onSetup, onSettingsClick }: StatusSectionProps) {
+  const keys = config
+    ? [config.trigger_mouse && "鼠标中键", config.trigger_toggle && "右 Alt"].filter(Boolean).join(" / ")
+    : "";
 
   return (
-    <section className="flex items-center justify-between py-4">
-      <div data-tauri-drag-region className="flex items-center gap-4">
-        <div className="relative flex h-3 w-3 items-center justify-center">
-          {asrConfigured ? (
-            <span className="h-2 w-2 rounded-full bg-emerald-500" />
-          ) : (
-            <span className="h-2 w-2 rounded-full bg-neutral-300" />
-          )}
-        </div>
-
-        <div>
-          <div className="text-sm text-neutral-900">{statusText}</div>
-          <div className="text-xs text-neutral-400">{helperText}</div>
-        </div>
+    <section className="flex items-center justify-between gap-4 py-4">
+      <div data-tauri-drag-region className="flex min-w-0 items-center gap-3">
+        <span className={`h-2 w-2 flex-shrink-0 rounded-full ${speechReady ? "bg-emerald-500" : "bg-amber-500"}`} />
+        {speechReady ? (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-neutral-500">
+            {keys && <Key>{keys}</Key>}
+            <span>单击听写</span>
+            <span className="text-neutral-300">·</span>
+            <span>双击润色</span>
+            <span className="text-neutral-300">·</span>
+            <span>长按 AI 助手</span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-neutral-900">还差一步：设置语音识别</span>
+            <PrimaryButton onClick={onSetup}>继续设置</PrimaryButton>
+          </div>
+        )}
       </div>
 
       <button
         onClick={onSettingsClick}
-        className="p-1 text-neutral-400 transition-colors hover:bg-neutral-200 hover:text-neutral-700"
+        className="inline-flex flex-shrink-0 items-center gap-1.5 px-2 py-1 text-sm text-neutral-500 transition-colors hover:bg-neutral-200 hover:text-neutral-900"
       >
         <Settings2 className="h-4 w-4" />
+        设置
       </button>
     </section>
   );

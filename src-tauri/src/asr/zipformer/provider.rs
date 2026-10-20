@@ -30,7 +30,7 @@ impl ZipformerProvider {
     pub fn try_new(config: &ZipformerStreamingConfig) -> Result<Self> {
         let dir = if config.model_dir.is_empty() {
             return Err(anyhow!(
-                "Zipformer 模型目录未设置。请在设置中下载 Zipformer 流式模型。"
+                "本地识别模型尚未下载，请在设置中下载。"
             ));
         } else {
             PathBuf::from(&config.model_dir)
@@ -39,7 +39,7 @@ impl ZipformerProvider {
         if !model::is_present(&dir) {
             let missing = model::missing_files(&dir).join(", ");
             return Err(anyhow!(
-                "Zipformer 模型文件不完整，缺少: {missing}。请在设置中下载模型。"
+                "本地识别模型文件不完整（缺少 {missing}），请在设置中重新下载。"
             ));
         }
 

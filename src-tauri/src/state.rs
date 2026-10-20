@@ -1,4 +1,3 @@
-use serde::Serialize;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
@@ -67,15 +66,6 @@ pub enum DictationState {
         started_at: std::time::Instant,
     },
     PendingFinalize(PendingFinalizeState),
-}
-
-// ---------------------------------------------------------------------------
-// Command payloads
-// ---------------------------------------------------------------------------
-
-#[derive(Serialize)]
-pub struct AsrStatus {
-    pub configured: bool,
 }
 
 // ---------------------------------------------------------------------------
