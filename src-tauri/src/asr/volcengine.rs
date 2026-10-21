@@ -1,4 +1,4 @@
-//! Volcengine bigmodel SAUC streaming ASR provider (cloud WebSocket).
+//! Volcengine DoubaoVoice streaming ASR 2.0 (SeedASR) provider (cloud WebSocket).
 
 use anyhow::{anyhow, Result};
 use base64::Engine;

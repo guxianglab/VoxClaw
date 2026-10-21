@@ -194,7 +194,7 @@ export function SpeechPane({ config, update }: PaneProps) {
           <Advanced>
             <Field
               label="资源 ID"
-              hint="一般无需修改"
+              hint="默认 volc.seedasr.sauc.duration（流式识别 2.0），一般无需修改"
               value={asr.volcengine.resource_id}
               onChange={(v) => setCred("resource_id", v)}
             />

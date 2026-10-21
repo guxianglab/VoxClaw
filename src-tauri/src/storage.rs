@@ -179,6 +179,11 @@ pub struct ProxyConfig {
     pub url: String,
 }
 
+/// DoubaoVoice streaming ASR resource ids. Generations 1.0 (bigmodel) and 2.0
+/// (SeedASR) share the same WebSocket API; the resource id picks the model.
+pub const VOLCENGINE_ASR_2_0_RESOURCE_ID: &str = "volc.seedasr.sauc.duration";
+const VOLCENGINE_ASR_1_0_RESOURCE_ID: &str = "volc.bigasr.sauc.duration";
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct OnlineAsrConfig {
@@ -192,7 +197,7 @@ impl Default for OnlineAsrConfig {
         Self {
             app_key: String::new(),
             access_key: String::new(),
-            resource_id: "volc.bigasr.sauc.duration".to_string(),
+            resource_id: VOLCENGINE_ASR_2_0_RESOURCE_ID.to_string(),
         }
     }
 }
@@ -541,7 +546,18 @@ fn parse_config(content: &str) -> Option<AppConfig> {
     if config.llm_config.profiles.is_empty() {
         config.llm_config.profiles = default_scene_profiles();
     }
+    migrate_volcengine_resource_id(&mut config);
     Some(config)
+}
+
+/// The app targets streaming ASR 2.0: rewrite the retired 1.0 default and junk
+/// values (e.g. "1"), but keep deliberate overrides such as the concurrent
+/// billing variants.
+fn migrate_volcengine_resource_id(config: &mut AppConfig) {
+    let id = config.asr.volcengine.resource_id.trim();
+    if id == VOLCENGINE_ASR_1_0_RESOURCE_ID || !id.starts_with("volc.") {
+        config.asr.volcengine.resource_id = VOLCENGINE_ASR_2_0_RESOURCE_ID.to_string();
+    }
 }
 
 fn backup_invalid_config(config_path: &std::path::Path, content: &str) {
@@ -603,5 +619,25 @@ mod tests {
     #[test]
     fn invalid_json_is_rejected() {
         assert!(parse_config("not json").is_none());
+    }
+
+    #[test]
+    fn volcengine_resource_id_migrates_to_2_0() {
+        for stale in ["\"volc.bigasr.sauc.duration\"", "\"1\"", "\"\""] {
+            let content = format!("{{\"asr\":{{\"volcengine\":{{\"resource_id\":{stale}}}}}}}");
+            let config = parse_config(&content).expect("parses");
+            assert_eq!(
+                config.asr.volcengine.resource_id, VOLCENGINE_ASR_2_0_RESOURCE_ID,
+                "expected migration for {stale}"
+            );
+        }
+    }
+
+    #[test]
+    fn volcengine_resource_id_keeps_deliberate_overrides() {
+        let content =
+            r#"{"asr":{"volcengine":{"resource_id":"volc.seedasr.sauc.concurrent"}}}"#;
+        let config = parse_config(content).expect("parses");
+        assert_eq!(config.asr.volcengine.resource_id, "volc.seedasr.sauc.concurrent");
     }
 }
