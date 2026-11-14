@@ -487,6 +487,7 @@ pub fn run() {
             commands::switch_input_device,
             commands::start_audio_test,
             commands::stop_audio_test,
+            commands::test_volcengine_connection,
             commands::test_llm_connection,
             commands::get_default_scene_profiles,
             commands::set_indicator_window_expanded,

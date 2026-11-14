@@ -103,3 +103,13 @@ pub fn stop_audio_test(audio: tauri::State<AudioState>) -> Result<(), String> {
         Err("Failed to lock audio service".to_string())
     }
 }
+
+#[tauri::command]
+pub async fn test_volcengine_connection(
+    config: crate::storage::OnlineAsrConfig,
+    proxy: crate::storage::ProxyConfig,
+) -> Result<String, String> {
+    crate::asr::volcengine::test_connection(&config, &proxy)
+        .await
+        .map_err(|e| e.to_string())
+}

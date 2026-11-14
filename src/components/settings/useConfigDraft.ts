@@ -6,7 +6,7 @@ export type SaveState = "idle" | "saving" | "saved" | "error";
 export function isSpeechReady(config: AppConfig): boolean {
   return config.asr.provider === "zipformer_streaming"
     ? !!config.asr.zipformer.model_dir
-    : !!config.asr.volcengine.app_key.trim() && !!config.asr.volcengine.access_key.trim();
+    : !!config.asr.volcengine.api_key?.trim();
 }
 
 export function isAiReady(config: AppConfig): boolean {

@@ -31,6 +31,96 @@ pub struct VolcengineProvider {
     proxy: ProxyConfig,
 }
 
+fn prepare_ws_request(config: &OnlineAsrConfig) -> Result<tungstenite::http::Request<()>> {
+    let mut request = ASYNC_URL.into_client_request()?;
+    let headers = request.headers_mut();
+
+    let api_key = config.api_key.trim();
+    let app_key = config.app_key.trim();
+    let access_key = config.access_key.trim();
+
+    if !api_key.is_empty() {
+        headers.insert(
+            "X-Api-Key",
+            HeaderValue::from_str(api_key).map_err(|e| anyhow!("无效的 API Key: {}", e))?,
+        );
+    } else if app_key.starts_with("api-key-") && !access_key.is_empty() {
+        // 用户将新版控制台的密钥编号误填为 app_key，真实密钥填入了 access_key
+        headers.insert(
+            "X-Api-Key",
+            HeaderValue::from_str(access_key).map_err(|e| anyhow!("无效的 API Key: {}", e))?,
+        );
+    } else {
+        if !app_key.is_empty() {
+            headers.insert(
+                "X-Api-App-Key",
+                HeaderValue::from_str(app_key).map_err(|e| anyhow!("无效的 APP ID: {}", e))?,
+            );
+        }
+        if !access_key.is_empty() {
+            headers.insert(
+                "X-Api-Access-Key",
+                HeaderValue::from_str(access_key).map_err(|e| anyhow!("无效的 Access Token: {}", e))?,
+            );
+        }
+    }
+
+    let resource_id = config.resource_id.trim();
+    let res_id = if resource_id.is_empty() {
+        crate::storage::VOLCENGINE_ASR_2_0_RESOURCE_ID
+    } else {
+        resource_id
+    };
+    headers.insert(
+        "X-Api-Resource-Id",
+        HeaderValue::from_str(res_id).map_err(|e| anyhow!("无效的 Resource ID: {}", e))?,
+    );
+    headers.insert(
+        "X-Api-Connect-Id",
+        HeaderValue::from_str(&uuid::Uuid::new_v4().to_string()).unwrap(),
+    );
+
+    Ok(request)
+}
+
+pub async fn test_connection(config: &OnlineAsrConfig, proxy: &ProxyConfig) -> Result<String> {
+    let api_key = config.api_key.trim();
+
+    if api_key.is_empty() {
+        return Err(anyhow!("请先填写火山语音 API Key"));
+    }
+
+    if api_key.starts_with("api-key-") {
+        return Err(anyhow!(
+            "填写的 API Key 似乎是控制台表格第一列的编号 (api-key-xxxx)。请复制第三列“API Key”对应的真实密钥！"
+        ));
+    }
+
+    let request = prepare_ws_request(config)?;
+
+    match timeout(Duration::from_secs(5), connect_ws(request, proxy)).await {
+        Ok(Ok((_ws_stream, response))) => {
+            let logid = response
+                .headers()
+                .get("X-Tt-Logid")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("未知");
+            Ok(format!("连接成功！豆包语音服务鉴权通过 (Logid: {})", logid))
+        }
+        Ok(Err(e)) => {
+            let msg = e.to_string();
+            if msg.contains("401") || msg.contains("Unauthorized") {
+                Err(anyhow!("鉴权失败 (HTTP 401)：密钥无效或未开通该服务，请检查 API Key 是否正确复制。"))
+            } else if msg.contains("400") || msg.contains("Bad Request") {
+                Err(anyhow!("请求错误 (HTTP 400)：请检查资源 ID (Resource ID) 或密钥格式。"))
+            } else {
+                Err(anyhow!("WebSocket 连接失败: {}", msg))
+            }
+        }
+        Err(_) => Err(anyhow!("连接超时（5秒），请检查网络连接或代理设置")),
+    }
+}
+
 impl VolcengineProvider {
     pub fn new(config: OnlineAsrConfig, proxy: ProxyConfig) -> Self {
         Self { config, proxy }
@@ -71,26 +161,13 @@ impl AsrProvider for VolcengineProvider {
                 .unwrap();
 
             rt.block_on(async move {
-                let mut request = ASYNC_URL.into_client_request().unwrap();
-                {
-                    let headers = request.headers_mut();
-                    headers.insert(
-                        "X-Api-App-Key",
-                        HeaderValue::from_str(&config.app_key).unwrap(),
-                    );
-                    headers.insert(
-                        "X-Api-Access-Key",
-                        HeaderValue::from_str(&config.access_key).unwrap(),
-                    );
-                    headers.insert(
-                        "X-Api-Resource-Id",
-                        HeaderValue::from_str(&config.resource_id).unwrap(),
-                    );
-                    headers.insert(
-                        "X-Api-Connect-Id",
-                        HeaderValue::from_str(&uuid::Uuid::new_v4().to_string()).unwrap(),
-                    );
-                }
+                let request = match prepare_ws_request(&config) {
+                    Ok(req) => req,
+                    Err(e) => {
+                        eprintln!("[ASR] Failed to prepare request: {}", e);
+                        return Err(e);
+                    }
+                };
 
                 let (ws_stream, response) =
                     match timeout(ASR_CONNECT_TIMEOUT, connect_ws(request, &proxy)).await {

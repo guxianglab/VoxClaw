@@ -8,8 +8,8 @@ export type SettingsTab = "general" | "speech" | "ai" | "polish" | "assistant";
 
 const TABS: Array<{ key: SettingsTab; label: string; desc: string }> = [
   { key: "general", label: "常规", desc: "快捷键、麦克风" },
-  { key: "speech", label: "语音识别", desc: "把声音变成文字" },
-  { key: "ai", label: "AI 模型", desc: "润色、助手、会议总结" },
+  { key: "speech", label: "语音识别", desc: "语音转文字（豆包 / 离线）" },
+  { key: "ai", label: "AI 模型", desc: "润色、助手（大语言模型）" },
   { key: "polish", label: "润色", desc: "把口语整理成书面语" },
   { key: "assistant", label: "AI 助手", desc: "长按说出指令" },
 ];

@@ -36,6 +36,7 @@ export interface ProxyConfig {
 }
 
 export interface OnlineAsrConfig {
+    api_key: string;
     app_key: string;
     access_key: string;
     resource_id: string;
@@ -142,6 +143,8 @@ export const api = {
     switchInputDevice: (deviceId: string) => invoke("switch_input_device", { deviceId }),
     startAudioTest: () => invoke("start_audio_test"),
     stopAudioTest: () => invoke("stop_audio_test"),
+    testVolcengineConnection: (config: OnlineAsrConfig, proxy: ProxyConfig) =>
+        invoke<string>("test_volcengine_connection", { config, proxy }),
     testLlmConnection: (config: LlmConfig, proxy: ProxyConfig) => invoke<string>("test_llm_connection", { config, proxy }),
     getDefaultSceneProfiles: () => invoke<PromptProfile[]>("get_default_scene_profiles"),
     // Meeting mode

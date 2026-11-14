@@ -187,6 +187,7 @@ const VOLCENGINE_ASR_1_0_RESOURCE_ID: &str = "volc.bigasr.sauc.duration";
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct OnlineAsrConfig {
+    pub api_key: String,
     pub app_key: String,
     pub access_key: String,
     pub resource_id: String,
@@ -195,6 +196,7 @@ pub struct OnlineAsrConfig {
 impl Default for OnlineAsrConfig {
     fn default() -> Self {
         Self {
+            api_key: String::new(),
             app_key: String::new(),
             access_key: String::new(),
             resource_id: VOLCENGINE_ASR_2_0_RESOURCE_ID.to_string(),
@@ -558,6 +560,16 @@ fn migrate_volcengine_resource_id(config: &mut AppConfig) {
     if id == VOLCENGINE_ASR_1_0_RESOURCE_ID || !id.starts_with("volc.") {
         config.asr.volcengine.resource_id = VOLCENGINE_ASR_2_0_RESOURCE_ID.to_string();
     }
+    // If the user previously pasted new-console api-key-xxxx into app_key and the secret into access_key,
+    // migrate them into api_key.
+    if config.asr.volcengine.api_key.trim().is_empty()
+        && config.asr.volcengine.app_key.trim().starts_with("api-key-")
+        && !config.asr.volcengine.access_key.trim().is_empty()
+    {
+        config.asr.volcengine.api_key = config.asr.volcengine.access_key.trim().to_string();
+        config.asr.volcengine.app_key = String::new();
+        config.asr.volcengine.access_key = String::new();
+    }
 }
 
 fn backup_invalid_config(config_path: &std::path::Path, content: &str) {
@@ -639,5 +651,22 @@ mod tests {
             r#"{"asr":{"volcengine":{"resource_id":"volc.seedasr.sauc.concurrent"}}}"#;
         let config = parse_config(content).expect("parses");
         assert_eq!(config.asr.volcengine.resource_id, "volc.seedasr.sauc.concurrent");
+    }
+
+    #[test]
+    fn volcengine_migrates_misplaced_api_key_id() {
+        let content = json!({
+            "asr": {
+                "volcengine": {
+                    "app_key": "api-key-20260201213720",
+                    "access_key": "secret-token-12345"
+                }
+            }
+        })
+        .to_string();
+        let config = parse_config(&content).expect("parses");
+        assert_eq!(config.asr.volcengine.api_key, "secret-token-12345");
+        assert_eq!(config.asr.volcengine.app_key, "");
+        assert_eq!(config.asr.volcengine.access_key, "");
     }
 }

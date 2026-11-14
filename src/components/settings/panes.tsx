@@ -17,7 +17,7 @@ import {
   Section,
   ToggleRow,
 } from "../ui";
-import { isAiReady } from "./useConfigDraft";
+import { isAiReady, isSpeechReady } from "./useConfigDraft";
 
 export interface PaneProps {
   config: AppConfig;
@@ -147,6 +147,9 @@ export function SpeechPane({ config, update }: PaneProps) {
     };
   }, []);
 
+  const [testingVolc, setTestingVolc] = useState(false);
+  const [volcResult, setVolcResult] = useState<{ ok: boolean; message: string } | null>(null);
+
   const startDownload = async () => {
     setDownload({ active: true, file: "", progress: 0, error: null });
     try {
@@ -158,8 +161,23 @@ export function SpeechPane({ config, update }: PaneProps) {
     }
   };
 
-  const setCred = (key: "app_key" | "access_key" | "resource_id", value: string) =>
+  const testVolc = async () => {
+    setTestingVolc(true);
+    setVolcResult(null);
+    try {
+      const msg = await api.testVolcengineConnection(asr.volcengine, config.proxy);
+      setVolcResult({ ok: true, message: msg });
+    } catch (e) {
+      setVolcResult({ ok: false, message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setTestingVolc(false);
+    }
+  };
+
+  const setCred = (key: "api_key" | "resource_id", value: string) => {
     update({ ...config, asr: { ...asr, volcengine: { ...asr.volcengine, [key]: value } } });
+    setVolcResult(null);
+  };
 
   return (
     <div className="space-y-8">
@@ -181,24 +199,47 @@ export function SpeechPane({ config, update }: PaneProps) {
       </Section>
 
       {!isLocal ? (
-        <Section title="豆包语音账号" desc="在火山引擎控制台开通「豆包语音 · 流式语音识别」后，于应用详情页获取">
-          <div className="grid gap-4 md:grid-cols-2">
-            <Field label="APP ID" value={asr.volcengine.app_key} onChange={(v) => setCred("app_key", v)} />
+        <Section
+          title="豆包语音凭证（用于语音识别）"
+          desc="用于将麦克风语音实时转写为文字。在火山引擎控制台「API Key 管理」中获取。"
+        >
+          <div className="space-y-4">
             <Field
-              label="Access Token"
+              label="火山语音 API Key"
               type="password"
-              value={asr.volcengine.access_key}
-              onChange={(v) => setCred("access_key", v)}
+              placeholder="复制火山控制台「API Key 管理」里的 API Key"
+              hint="在火山引擎控制台进入「语音技术」→「API Key 管理」，复制表格第三列“API Key”的内容（无需填写 APP ID/Token）。"
+              value={asr.volcengine.api_key}
+              onChange={(v) => setCred("api_key", v)}
             />
+
+            {asr.volcengine.api_key.trim().startsWith("api-key-") && (
+              <Notice tone="amber">
+                您输入的似乎是第一列的密钥编号（形如 api-key-xxxx）。请复制该行第三列“API Key”对应的真实密钥。
+              </Notice>
+            )}
+
+            <div className="flex flex-wrap items-center gap-3">
+              <PrimaryButton onClick={testVolc} disabled={testingVolc || !isSpeechReady(config)}>
+                {testingVolc && <Loader2 className="h-4 w-4 animate-spin" />}
+                {testingVolc ? "正在连接…" : "测试语音连接"}
+              </PrimaryButton>
+              {volcResult && (
+                <span className={`text-sm ${volcResult.ok ? "text-emerald-600" : "text-red-600"}`}>
+                  {volcResult.message}
+                </span>
+              )}
+            </div>
+
+            <Advanced>
+              <Field
+                label="资源 ID (Resource ID)"
+                hint="默认 volc.seedasr.sauc.duration（豆包流式识别 2.0），一般无需修改"
+                value={asr.volcengine.resource_id}
+                onChange={(v) => setCred("resource_id", v)}
+              />
+            </Advanced>
           </div>
-          <Advanced>
-            <Field
-              label="资源 ID"
-              hint="默认 volc.seedasr.sauc.duration（流式识别 2.0），一般无需修改"
-              value={asr.volcengine.resource_id}
-              onChange={(v) => setCred("resource_id", v)}
-            />
-          </Advanced>
         </Section>
       ) : (
         <Section title="本地模型">
@@ -304,27 +345,34 @@ export function AiPane({ config, update }: PaneProps) {
         </div>
       </Section>
 
-      <Section title="连接信息">
+      <Section title="模型凭证与参数" desc="用于文字润色、语音助手指令和会议总结的大语言模型配置">
         {preset === CUSTOM_PRESET && (
           <Field
-            label="服务地址"
+            label="服务地址 (Base URL)"
             hint="兼容 OpenAI 接口的地址，通常以 /v1 结尾"
             placeholder="https://example.com/v1"
             value={llm.base_url}
             onChange={(base_url) => setLlm({ base_url })}
           />
         )}
-        <Field label="API Key" type="password" value={llm.api_key} onChange={(api_key) => setLlm({ api_key })} />
         <Field
-          label="模型"
-          hint="可在服务商文档中查到可用的模型名称"
+          label="大模型 API Key"
+          type="password"
+          placeholder="例如 sk-..."
+          hint="由 DeepSeek / 阿里百炼 / OpenAI 等模型服务商提供（用于润色/助手，与语音识别 API Key 无关）"
+          value={llm.api_key}
+          onChange={(api_key) => setLlm({ api_key })}
+        />
+        <Field
+          label="模型名称 (Model)"
+          hint="可在服务商文档中查到可用的模型名称（如 deepseek-chat、qwen-plus 等）"
           value={llm.model}
           onChange={(model) => setLlm({ model })}
         />
         <div className="flex flex-wrap items-center gap-3">
           <PrimaryButton onClick={test} disabled={testing || !isAiReady(config)}>
             {testing && <Loader2 className="h-4 w-4 animate-spin" />}
-            {testing ? "正在连接…" : "测试连接"}
+            {testing ? "正在连接…" : "测试模型连接"}
           </PrimaryButton>
           {result && (
             <span className={`text-sm ${result.ok ? "text-emerald-600" : "text-red-600"}`}>{result.message}</span>
