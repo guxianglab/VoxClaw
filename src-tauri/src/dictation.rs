@@ -498,7 +498,7 @@ pub fn begin_recording_session<R: Runtime>(
     let started_at = Instant::now();
     let audio = app_handle.state::<AudioState>();
     let (sample_rate, stream_rx) = match audio.lock() {
-        Ok(audio) => match audio.start_recording_with_streaming() {
+        Ok(mut audio) => match audio.start_recording_with_streaming() {
             Ok(rx) => (audio.get_sample_rate(), rx),
             Err(err) => {
                 eprintln!("[START] Failed to start audio capture: {}", err);
@@ -530,7 +530,7 @@ pub fn begin_recording_session<R: Runtime>(
             app_handle.emit("recording_status", false).ok();
             window::emit_dictation_intent(app_handle, DictationIntent::None);
             window::emit_session_complete(app_handle);
-            if let Ok(audio) = app_handle.state::<AudioState>().lock() {
+            if let Ok(mut audio) = app_handle.state::<AudioState>().lock() {
                 let _ = audio.stop_recording();
             }
             false
@@ -546,7 +546,7 @@ pub fn stop_recording_now<R: Runtime>(app_handle: &AppHandle<R>) -> (Vec<f32>, u
     let audio = app_handle.state::<AudioState>();
     let mut buffer = Vec::new();
     let mut sample_rate = 48_000u32;
-    if let Ok(audio) = audio.lock() {
+    if let Ok(mut audio) = audio.lock() {
         sample_rate = audio.get_sample_rate();
         if let Ok(b) = audio.stop_recording() {
             buffer = b;

@@ -25,6 +25,8 @@ pub struct AsrStreamParams {
 pub trait AsrProvider: Send + Sync {
     fn name(&self) -> &'static str;
     fn start_streaming(&self, params: AsrStreamParams) -> Result<Box<dyn AsrSession>>;
+    /// Unload heavy resources (e.g. ONNX models) to free memory when idle or switching engines.
+    fn unload(&self) {}
 }
 
 pub trait AsrSession: Send {
@@ -124,6 +126,7 @@ impl AsrService {
             match self.inner.try_write() {
                 Ok(mut guard) => {
                     let old = guard.name();
+                    guard.unload();
                     *guard = provider;
                     println!("[ASR] Provider replaced: {} -> {} (attempt {})", old, name, attempt);
                     return Ok(());

@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tauri::Manager;
 
 // ─────────────────────────────────────────────────────────────
 //  常量
@@ -75,10 +76,16 @@ unsafe impl Send for SendStream {}
 unsafe impl Sync for SendStream {}
 
 pub struct AudioService {
-    /// 当前流 — 创建后一直 .play()，不 pause
+    /// 当前流 — 按需创建，录音结束后延时超时释放
     stream: Option<SendStream>,
     /// 共享状态
     state: Arc<SharedState>,
+    /// 当前配置的设备 ID
+    configured_device_id: String,
+    /// Tauri AppHandle，用于按需创建流与事件通知
+    app_handle: Option<tauri::AppHandle>,
+    /// 世代计数器，用于空闲租约超时防竞争
+    stream_generation: Arc<AtomicU64>,
 }
 
 // AudioService 所有方法通过 Mutex<AudioService> 调用，
@@ -88,6 +95,9 @@ impl AudioService {
         Self {
             stream: None,
             state: SharedState::new(),
+            configured_device_id: String::new(),
+            app_handle: None,
+            stream_generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -139,23 +149,18 @@ impl AudioService {
 
     // ─────── 初始化 / 切换设备 ───────
 
-    pub fn init_with_device<R: tauri::Runtime>(
-        &mut self,
-        device_id: &str,
-        app_handle: tauri::AppHandle<R>,
-    ) -> Result<()> {
-        // 1. 先丢弃旧流 — 自动 stop + release COM 资源
-        self.stream = None;
-        self.state.active.store(false, Ordering::SeqCst);
+    // ─────── 设备解析 ───────
 
-        // 2. 找设备
+    pub fn resolve_device(
+        device_id: &str,
+    ) -> Result<(cpal::Device, cpal::SupportedStreamConfig, String, String)> {
         let host = cpal::default_host();
         let mut resolved_id = device_id.to_string();
 
         let device = if device_id.is_empty() {
             let def = host
                 .default_input_device()
-                .ok_or(anyhow::anyhow!("No default input device found"))?;
+                .ok_or_else(|| anyhow::anyhow!("No default input device found"))?;
             resolved_id = def.name().unwrap_or_default();
             def
         } else {
@@ -181,52 +186,36 @@ impl AudioService {
                     }
                 }
             }
-            target_device.ok_or(anyhow::anyhow!("Device not found: {}", device_id))?
+            target_device.ok_or_else(|| anyhow::anyhow!("Device not found: {}", device_id))?
         };
 
         let actual_name = device.name()?;
         let supported = device.default_input_config()?;
-        println!(
-            "[AUDIO] init device_id='{}' actual_name='{}' supported={:?}",
-            resolved_id, actual_name, supported
-        );
+        Ok((device, supported, actual_name, resolved_id))
+    }
 
-        // 3. 准备配置 — 使用设备默认值
+    // ─────── 初始化 / 切换设备配置 ───────
+
+    pub fn init_with_device(
+        &mut self,
+        device_id: &str,
+        app_handle: tauri::AppHandle,
+    ) -> Result<()> {
+        // 先丢弃旧流 — 自动 stop + release COM 资源
+        self.stream = None;
+        self.state.active.store(false, Ordering::SeqCst);
+        self.configured_device_id = device_id.to_string();
+        self.app_handle = Some(app_handle);
+
+        let (_device, supported, actual_name, resolved_id) = Self::resolve_device(device_id)?;
         let sample_rate = supported.sample_rate().0;
-        let channels = supported.channels() as usize;
-        let sample_format = supported.sample_format();
-
-        let stream_config = cpal::StreamConfig {
-            channels: supported.channels(),
-            sample_rate: supported.sample_rate(),
-            buffer_size: cpal::BufferSize::Default,
-        };
-
-        // 4. 更新共享状态
         self.state.sample_rate.store(sample_rate, Ordering::Relaxed);
-        *self.state.device_name.lock().unwrap() = resolved_id;
+        *self.state.device_name.lock().unwrap() = resolved_id.clone();
 
-        // 5. 构建流 — 通过通用闭包处理所有样本格式
-        let state = self.state.clone();
-        let cpal_stream = build_input_stream(
-            &device,
-            &stream_config,
-            sample_format,
-            channels,
-            state,
-            app_handle,
-        )?;
-
-        // 6. 立即 play — **永不 pause**
-        //    这样可以完全回避 Windows WASAPI pause/play 恢复失败的问题。
-        //    数据采集由 `state.active` 原子变量控制。
-        cpal_stream.play()?;
         println!(
-            "[AUDIO] stream playing | sr={} ch={} fmt={:?}",
-            sample_rate, channels, sample_format
+            "[AUDIO] Device configured: id='{}' actual_name='{}' sr={} (stream on-demand)",
+            resolved_id, actual_name, sample_rate
         );
-
-        self.stream = Some(SendStream(cpal_stream));
         Ok(())
     }
 
@@ -243,7 +232,7 @@ impl AudioService {
     // ─────── 录音 ───────
 
     /// 开始录音 + 流式传输 — 返回 Receiver 接收实时音频块
-    pub fn start_recording_with_streaming(&self) -> Result<std::sync::mpsc::Receiver<Vec<f32>>> {
+    pub fn start_recording_with_streaming(&mut self) -> Result<std::sync::mpsc::Receiver<Vec<f32>>> {
         self.ensure_stream()?;
         self.state.buffer.lock().unwrap().clear();
 
@@ -258,7 +247,7 @@ impl AudioService {
         Ok(rx)
     }
 
-    pub fn stop_recording(&self) -> Result<Vec<f32>> {
+    pub fn stop_recording(&mut self) -> Result<Vec<f32>> {
         thread::sleep(std::time::Duration::from_millis(STOP_DRAIN_MS));
         self.state.active.store(false, Ordering::SeqCst);
         // 清除流式发送器
@@ -266,34 +255,104 @@ impl AudioService {
         let mut buf = self.state.buffer.lock().unwrap();
         let data = std::mem::take(&mut *buf);
         println!("[AUDIO] stop_recording, {} samples collected", data.len());
+
+        self.schedule_idle_timeout();
+
         Ok(data)
     }
 
     // ─────── 测试 ───────
 
-    pub fn start_test(&self) -> Result<()> {
+    pub fn start_test(&mut self) -> Result<()> {
         self.ensure_stream()?;
         self.state.active.store(true, Ordering::SeqCst);
         println!("[AUDIO] start_test");
         Ok(())
     }
 
-    pub fn stop_test(&self) -> Result<()> {
+    pub fn stop_test(&mut self) -> Result<()> {
         self.state.active.store(false, Ordering::SeqCst);
         self.state.buffer.lock().unwrap().clear();
-        println!("[AUDIO] stop_test");
+        self.stream = None;
+        self.stream_generation.fetch_add(1, Ordering::SeqCst);
+        println!("[AUDIO] stop_test: released microphone stream");
         Ok(())
     }
 
     // ─────── 内部 ───────
 
-    fn ensure_stream(&self) -> Result<()> {
-        if self.stream.is_none() {
-            return Err(anyhow::anyhow!(
-                "Audio stream not initialized. Please select a device in Settings."
-            ));
+    fn ensure_stream(&mut self) -> Result<()> {
+        if self.stream.is_some() {
+            // 只要流还在，递增 generation 取消任何正在计时的 idle timeout
+            self.stream_generation.fetch_add(1, Ordering::SeqCst);
+            return Ok(());
         }
+
+        let app_handle = self.app_handle.clone().ok_or_else(|| {
+            anyhow::anyhow!("AudioService: AppHandle not configured. Please initialize audio service.")
+        })?;
+
+        let (device, supported, actual_name, resolved_id) =
+            Self::resolve_device(&self.configured_device_id)?;
+
+        let sample_rate = supported.sample_rate().0;
+        let channels = supported.channels() as usize;
+        let sample_format = supported.sample_format();
+
+        let stream_config = cpal::StreamConfig {
+            channels: supported.channels(),
+            sample_rate: supported.sample_rate(),
+            buffer_size: cpal::BufferSize::Default,
+        };
+
+        self.state.sample_rate.store(sample_rate, Ordering::Relaxed);
+        *self.state.device_name.lock().unwrap() = resolved_id;
+
+        let state = self.state.clone();
+        let cpal_stream = build_input_stream(
+            &device,
+            &stream_config,
+            sample_format,
+            channels,
+            state,
+            app_handle,
+        )?;
+
+        cpal_stream.play()?;
+        println!(
+            "[AUDIO] stream opened on-demand for '{}' | sr={} ch={} fmt={:?}",
+            actual_name, sample_rate, channels, sample_format
+        );
+
+        self.stream = Some(SendStream(cpal_stream));
+        self.stream_generation.fetch_add(1, Ordering::SeqCst);
         Ok(())
+    }
+
+    fn schedule_idle_timeout(&self) {
+        let gen = self.stream_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let stream_gen = self.stream_generation.clone();
+        let state = self.state.clone();
+        let app_handle = self.app_handle.clone();
+
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+            if stream_gen.load(Ordering::SeqCst) == gen && !state.active.load(Ordering::Relaxed) {
+                if let Some(app) = app_handle {
+                    if let Some(audio_state) = app.try_state::<crate::state::AudioState>() {
+                        if let Ok(mut audio) = audio_state.lock() {
+                            if audio.stream_generation.load(Ordering::SeqCst) == gen
+                                && !audio.state.active.load(Ordering::Relaxed)
+                                && audio.stream.is_some()
+                            {
+                                println!("[AUDIO] Stream idle timeout (10s): releasing microphone stream");
+                                audio.stream = None;
+                            }
+                        }
+                    }
+                }
+            }
+        });
     }
 }
 
@@ -310,13 +369,13 @@ impl Drop for AudioService {
 //  统一的输入流构建
 // ─────────────────────────────────────────────────────────────
 
-fn build_input_stream<R: tauri::Runtime>(
+fn build_input_stream(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     sample_format: SampleFormat,
     channels: usize,
     state: Arc<SharedState>,
-    app_handle: tauri::AppHandle<R>,
+    app_handle: tauri::AppHandle,
 ) -> Result<cpal::Stream> {
     let err_fn = {
         let app_handle = app_handle.clone();
@@ -531,8 +590,8 @@ fn current_time_ms() -> u64 {
 
 /// Monitor that polls for the user's preferred device to come back online,
 /// then switches to it automatically.
-fn spawn_preferred_device_monitor<R: tauri::Runtime>(
-    app_handle: tauri::AppHandle<R>,
+fn spawn_preferred_device_monitor(
+    app_handle: tauri::AppHandle,
     preferred_id: String,
 ) {
     tauri::async_runtime::spawn(async move {
@@ -560,7 +619,7 @@ fn spawn_preferred_device_monitor<R: tauri::Runtime>(
 }
 
 /// Monitor that polls for ANY device when none were available at disconnect time.
-fn spawn_any_device_monitor<R: tauri::Runtime>(app_handle: tauri::AppHandle<R>) {
+fn spawn_any_device_monitor(app_handle: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         use tauri::Manager;
         use tauri::Emitter;
@@ -604,7 +663,7 @@ fn spawn_any_device_monitor<R: tauri::Runtime>(app_handle: tauri::AppHandle<R>) 
 /// Long-running device watcher: detects device list changes (plug/unplug) and
 /// re-initializes the audio stream when the current device disappears or the
 /// preferred device reappears. Call once during app startup.
-pub fn start_device_watcher<R: tauri::Runtime + 'static>(app_handle: tauri::AppHandle<R>) {
+pub fn start_device_watcher(app_handle: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         use tauri::Manager;
         use tauri::Emitter;

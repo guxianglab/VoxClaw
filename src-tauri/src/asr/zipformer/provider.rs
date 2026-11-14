@@ -7,7 +7,7 @@
 //! recognizer's built-in endpoint detector signals sentence boundaries.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use anyhow::{anyhow, Result};
@@ -20,10 +20,11 @@ use crate::storage::ZipformerStreamingConfig;
 
 const TARGET_SR: i32 = 16_000;
 
-/// sherpa-onnx Streaming Zipformer provider. Holds one `OnlineRecognizer`
-/// (thread-safe, reused across sessions).
+/// sherpa-onnx Streaming Zipformer provider.
+/// Loads `OnlineRecognizer` lazily on first speech session, and frees it when unloaded/switched.
 pub struct ZipformerProvider {
-    recognizer: Arc<OnlineRecognizer>,
+    config: ZipformerStreamingConfig,
+    recognizer: Mutex<Option<Arc<OnlineRecognizer>>>,
 }
 
 impl ZipformerProvider {
@@ -43,6 +44,28 @@ impl ZipformerProvider {
             ));
         }
 
+        let _ = model::encoder_file(&dir)
+            .ok_or_else(|| anyhow!("encoder .onnx not found"))?;
+        let _ = model::decoder_file(&dir)
+            .ok_or_else(|| anyhow!("decoder .onnx not found"))?;
+        let _ = model::joiner_file(&dir)
+            .ok_or_else(|| anyhow!("joiner .onnx not found"))?;
+
+        println!("[ZIPFORMER] Provider verified (model present at {}, lazy load on first speech)", dir.display());
+
+        Ok(Self {
+            config: config.clone(),
+            recognizer: Mutex::new(None),
+        })
+    }
+
+    fn get_or_load_recognizer(&self) -> Result<Arc<OnlineRecognizer>> {
+        let mut guard = self.recognizer.lock().unwrap();
+        if let Some(ref recognizer) = *guard {
+            return Ok(recognizer.clone());
+        }
+
+        let dir = PathBuf::from(&self.config.model_dir);
         let encoder = model::encoder_file(&dir)
             .ok_or_else(|| anyhow!("encoder .onnx not found"))?;
         let decoder = model::decoder_file(&dir)
@@ -69,11 +92,11 @@ impl ZipformerProvider {
         let recognizer = OnlineRecognizer::create(&cfg)
             .ok_or_else(|| anyhow!("创建 Zipformer OnlineRecognizer 失败"))?;
 
-        println!("[ZIPFORMER] model loaded from {}", dir.display());
+        println!("[ZIPFORMER] OnlineRecognizer loaded into RAM from {}", dir.display());
 
-        Ok(Self {
-            recognizer: Arc::new(recognizer),
-        })
+        let arc = Arc::new(recognizer);
+        *guard = Some(arc.clone());
+        Ok(arc)
     }
 }
 
@@ -89,11 +112,25 @@ impl AsrProvider for ZipformerProvider {
             on_update,
         } = params;
 
-        let recognizer = self.recognizer.clone();
+        let recognizer = self.get_or_load_recognizer()?;
         let handle = ZipformerSession::spawn(recognizer, audio_rx, sample_rate, on_update)?;
         Ok(Box::new(ZipformerSession {
             handle: Some(handle),
         }))
+    }
+
+    fn unload(&self) {
+        let mut guard = self.recognizer.lock().unwrap();
+        if guard.is_some() {
+            println!("[ZIPFORMER] Unloading OnlineRecognizer, releasing ONNX model memory");
+            *guard = None;
+        }
+    }
+}
+
+impl Drop for ZipformerProvider {
+    fn drop(&mut self) {
+        self.unload();
     }
 }
 

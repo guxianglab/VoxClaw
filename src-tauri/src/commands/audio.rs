@@ -63,8 +63,8 @@ pub fn get_current_input_device(audio: tauri::State<AudioState>) -> String {
 }
 
 #[tauri::command]
-pub fn switch_input_device<R: Runtime>(
-    app: AppHandle<R>,
+pub fn switch_input_device(
+    app: AppHandle,
     audio: tauri::State<AudioState>,
     storage: tauri::State<StorageState>,
     device_id: String,
@@ -72,7 +72,7 @@ pub fn switch_input_device<R: Runtime>(
     // Update audio service
     if let Ok(mut audio) = audio.lock() {
         audio
-            .init_with_device(&device_id, app.clone())
+            .init_with_device(&device_id, app)
             .map_err(|e| e.to_string())?;
     } else {
         return Err("Failed to lock audio service".to_string());
@@ -88,7 +88,7 @@ pub fn switch_input_device<R: Runtime>(
 
 #[tauri::command]
 pub fn start_audio_test(audio: tauri::State<AudioState>) -> Result<(), String> {
-    if let Ok(audio) = audio.lock() {
+    if let Ok(mut audio) = audio.lock() {
         audio.start_test().map_err(|e| e.to_string())
     } else {
         Err("Failed to lock audio service".to_string())
@@ -97,7 +97,7 @@ pub fn start_audio_test(audio: tauri::State<AudioState>) -> Result<(), String> {
 
 #[tauri::command]
 pub fn stop_audio_test(audio: tauri::State<AudioState>) -> Result<(), String> {
-    if let Ok(audio) = audio.lock() {
+    if let Ok(mut audio) = audio.lock() {
         audio.stop_test().map_err(|e| e.to_string())
     } else {
         Err("Failed to lock audio service".to_string())

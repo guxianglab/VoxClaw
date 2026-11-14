@@ -837,6 +837,7 @@
         isFadingOut = false;
       }
       panel.classList.add('visible');
+      startAnimation();
     }
 
     function startFadeOut() {
@@ -921,6 +922,7 @@
       dictationIntent = 'none';
       targetLevel = smoothedLevel = 0;
       setHeaderLabel('AI');
+      stopAnimation();
     }
 
     // ─────────────────────────────────────────────
@@ -1121,13 +1123,45 @@
     }
 
     // ─────────────────────────────────────────────
-    // Audio bar animation loop
+    // Audio bar animation loop & lifecycle
     // ─────────────────────────────────────────────
+    let animFrameId = null;
+
     function isThinking() {
       return !isRecording && (isProcessing || isLlmProcessing) && !isAgentProcessing;
     }
 
+    function isLoopNeeded() {
+      const isVisible = panel.classList.contains('visible') && !panel.classList.contains('fade-out');
+      const hasActivity = isRecording || isProcessing || isLlmProcessing || isAgentProcessing || smoothedLevel > 0.01;
+      return isVisible && hasActivity;
+    }
+
+    function startAnimation() {
+      if (animFrameId === null) {
+        animFrameId = requestAnimationFrame(animate);
+      }
+    }
+
+    function stopAnimation() {
+      if (animFrameId !== null) {
+        cancelAnimationFrame(animFrameId);
+        animFrameId = null;
+      }
+      dots.forEach(d => {
+        d.style.transform = 'scaleY(0.55)';
+        d.style.opacity   = '0.6';
+      });
+    }
+
     function animate() {
+      animFrameId = null;
+
+      if (!isLoopNeeded()) {
+        stopAnimation();
+        return;
+      }
+
       const t = Date.now();
 
       if (isThinking()) {
@@ -1155,7 +1189,7 @@
         });
       }
 
-      requestAnimationFrame(animate);
+      animFrameId = requestAnimationFrame(animate);
     }
 
     // ─────────────────────────────────────────────
@@ -1175,6 +1209,9 @@
       event.listen('audio_level', (e) => {
         const raw = Math.min((e.payload || 0) * 8, 1.0);
         targetLevel = Math.sqrt(raw);
+        if (targetLevel > 0.01 && animFrameId === null && panel.classList.contains('visible')) {
+          startAnimation();
+        }
       });
 
       event.listen('recording_status', (e) => {
@@ -1363,7 +1400,7 @@
         tauriWindow = tauri.window;
         setupEventListeners(tauriEvent);
         setupResultDisplayInteraction();
-        animate();
+        stopAnimation(); // Stay completely paused while hidden until needed
         console.log('[Indicator] Ready');
       } catch (e) {
         console.error('[Indicator] Init failed:', e);

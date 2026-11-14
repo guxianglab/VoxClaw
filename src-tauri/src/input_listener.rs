@@ -192,22 +192,11 @@ unsafe extern "system" fn raw_input_wndproc(
 unsafe fn handle_raw_input(state: &ListenerState, lparam: LPARAM) {
     let hraw = HRAWINPUT(lparam.0 as *mut std::ffi::c_void);
 
-    // First call: get required buffer size
-    let mut dw_size = 0u32;
-    let _ = GetRawInputData(
-        hraw,
-        RID_INPUT,
-        None,
-        &mut dw_size,
-        size_of::<RAWINPUTHEADER>() as u32,
-    );
-
-    if dw_size == 0 {
-        return;
-    }
-
-    // Second call: read the actual data
-    let mut raw_buf: Vec<u8> = vec![0; dw_size as usize];
+    // Optimized: read into a 256-byte stack buffer with a single call to GetRawInputData.
+    // Standard keyboard and mouse RAWINPUT structures are ~40-48 bytes, well within 256 bytes.
+    // This completely eliminates heap allocations on every single mouse move/click.
+    let mut raw_buf = [0u8; 256];
+    let mut dw_size = raw_buf.len() as u32;
     let bytes_copied = GetRawInputData(
         hraw,
         RID_INPUT,
@@ -216,7 +205,7 @@ unsafe fn handle_raw_input(state: &ListenerState, lparam: LPARAM) {
         size_of::<RAWINPUTHEADER>() as u32,
     );
 
-    if bytes_copied != dw_size {
+    if bytes_copied == u32::MAX || (bytes_copied as usize) < size_of::<RAWINPUTHEADER>() {
         return;
     }
 
@@ -225,6 +214,12 @@ unsafe fn handle_raw_input(state: &ListenerState, lparam: LPARAM) {
     if raw.header.dwType == RIM_TYPEMOUSE.0 {
         let mouse = raw.data.mouse;
         let flags = mouse.Anonymous.Anonymous.usButtonFlags;
+
+        // FAST PATH: Pure mouse movement (the vast majority of 1000Hz mouse events)
+        // has usButtonFlags == 0. Return immediately with zero overhead!
+        if flags == 0 {
+            return;
+        }
 
         if (flags & RI_MOUSE_MIDDLE_BUTTON_DOWN) != 0 {
             if state.enable_mouse.load(Ordering::Relaxed) {
